@@ -568,10 +568,14 @@ func (c *Client) GetNodes(namespace string) ([]services.Server, error) {
 	if namespace == "" {
 		return nil, trace.BadParameter(MissingNamespaceError)
 	}
+	start := time.Now()
 	out, err := c.Get(c.Endpoint("namespaces", namespace, "nodes"), url.Values{})
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+	fmt.Printf("--> GetNodes: Network took: %v.\n", time.Since(start))
+
+	start = time.Now()
 	var items []json.RawMessage
 	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
 		return nil, trace.Wrap(err)
@@ -584,6 +588,8 @@ func (c *Client) GetNodes(namespace string) ([]services.Server, error) {
 		}
 		re[i] = s
 	}
+	fmt.Printf("--> GetNodes: Local took: %v.\n", time.Since(start))
+
 	return re, nil
 }
 

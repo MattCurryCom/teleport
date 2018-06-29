@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gravitational/teleport/lib/backend"
@@ -119,25 +121,43 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 	return items, nil
 }
 
+func prefix(bucket []string) string {
+	flatPath := strings.Join(bucket, filepath.Separator)
+	encodedPath := url.QueryEscape(flatPath)
+	return encodedPath
+}
+
 // GetKeys returns a list of keys for a given path
 func (bk *Backend) GetKeys(bucket []string) ([]string, error) {
-	files, err := ioutil.ReadDir(path.Join(bk.RootDir, path.Join(bucket...)))
+	allBuckets, err := ioutil.ReadDir(bk.RootDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
 		return nil, trace.ConvertSystemError(err)
 	}
-	// enumerate all directory entries and select only non-hidden files
-	retval := make([]string, 0)
-	for _, fi := range files {
-		name := fi.Name()
-		// legal keys cannot start with '.' (resrved prefix)
-		if name[0] != reservedPrefix {
-			retval = append(retval, name)
+
+	prefixBuckets := make([]string, 0, len(allBuckets))
+	for _, fi := range allBuckets {
+		if strings.HasPrefix(fi.Name(), prefix(bucket)) {
+			prefixBuckets = append(prefixBuckets, fi.Name())
 		}
 	}
-	return retval, nil
+
+	//files, err := ioutil.ReadDir(path.Join(bk.RootDir, path.Join(bucket...)))
+	//if err != nil {
+	//	if os.IsNotExist(err) {
+	//		return []string{}, nil
+	//	}
+	//	return nil, trace.ConvertSystemError(err)
+	//}
+	//// enumerate all directory entries and select only non-hidden files
+	//retval := make([]string, 0)
+	//for _, fi := range files {
+	//	name := fi.Name()
+	//	// legal keys cannot start with '.' (resrved prefix)
+	//	if name[0] != reservedPrefix {
+	//		retval = append(retval, name)
+	//	}
+	//}
+	//return retval, nil
 }
 
 // CreateVal creates value with a given TTL and key in the bucket

@@ -295,6 +295,7 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 	}
 	switch role {
 	case teleport.RoleNode:
+		start := time.Now()
 		namespace := p.ByName("namespace")
 		if !services.IsValidNamespace(namespace) {
 			return nil, trace.BadParameter("invalid namespace %q", namespace)
@@ -303,6 +304,7 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 		if err := auth.UpsertNode(server); err != nil {
 			return nil, trace.Wrap(err)
 		}
+		fmt.Printf("--> apiserver.go: UpsertNode took: %v.\n", time.Since(start))
 	case teleport.RoleAuth:
 		if err := auth.UpsertAuthServer(server); err != nil {
 			return nil, trace.Wrap(err)
@@ -317,7 +319,10 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 
 // upsertNode is called by remote SSH nodes when they ping back into the auth service
 func (s *APIServer) upsertNode(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
-	return s.upsertServer(auth, teleport.RoleNode, w, r, p, version)
+	start := time.Now()
+	i, err := s.upsertServer(auth, teleport.RoleNode, w, r, p, version)
+	fmt.Printf("--> apiserver.go: FULL UpsertNode took: %v.\n", time.Since(start))
+	return i, err
 }
 
 // getNodes returns registered SSH nodes

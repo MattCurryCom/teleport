@@ -20,6 +20,7 @@ package state
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/backend"
+	"github.com/gravitational/teleport/lib/backend/boltbk"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
@@ -148,6 +150,16 @@ func NewCachingAuthClient(config Config) (*CachingAuthClient, error) {
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	//tempDir, err := ioutil.TempDir("", "auth-init-test-")
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+	//bk, err := boltbk.New(backend.Params{"path": tempDir})
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+
 	cs := &CachingAuthClient{
 		Config:   config,
 		ap:       config.AccessPoint,
@@ -396,19 +408,26 @@ func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server
 	cs.fetch(params{
 		key: nodesKey(namespace),
 		fetch: func() error {
+			start := time.Now()
 			nodes, err = cs.ap.GetNodes(namespace)
+			fmt.Printf("--> CachingAuthClient: Fetching from Auth took: %v.\n", time.Since(start))
 			return err
 		},
 		useCache: func() error {
+			start := time.Now()
 			nodes, err = cs.presence.GetNodes(namespace)
+			fmt.Printf("--> CachingAuthClient: Fetching from cache took: %v.\n", time.Since(start))
 			return err
 		},
 		updateCache: func() (keys []string, cerr error) {
+			start := time.Now()
 			if err := cs.presence.DeleteAllNodes(namespace); err != nil {
 				if !trace.IsNotFound(err) {
 					return nil, trace.Wrap(err)
 				}
 			}
+			fmt.Printf("--> CachingAuthClient: DeleteAllNodes took: %v.\n", time.Since(start))
+			start = time.Now()
 			for _, node := range nodes {
 				cs.setTTL(node)
 				if err := cs.presence.UpsertNode(node); err != nil {
@@ -416,6 +435,7 @@ func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server
 				}
 				keys = append(keys, nodeKey(namespace, node.GetName()))
 			}
+			fmt.Printf("--> CachingAuthClient: UpsertNode loop took: %v.\n", time.Since(start))
 			return
 		},
 	})

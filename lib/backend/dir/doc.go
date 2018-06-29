@@ -16,7 +16,6 @@ limitations under the License.
 fs package implements backend.Backend interface using a regular
 filesystem-based directory. The filesystem needs to be POSIX
 compliant and support 'date modified' attribute on files.
-
 */
 
 // Package 'dir' implements the "directory backend". It uses a regular

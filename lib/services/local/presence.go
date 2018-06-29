@@ -18,6 +18,7 @@ package local
 
 import (
 	"encoding/json"
+	//"fmt"
 	"sort"
 	"time"
 
@@ -196,6 +197,7 @@ func (s *PresenceService) GetNodes(namespace string) ([]services.Server, error) 
 // UpsertNode registers node presence, permanently if ttl is 0 or
 // for the specified duration with second resolution if it's >= 1 second
 func (s *PresenceService) UpsertNode(server services.Server) error {
+	//start := time.Now()
 	if server.GetNamespace() == "" {
 		return trace.BadParameter("missing node namespace")
 	}
@@ -203,8 +205,11 @@ func (s *PresenceService) UpsertNode(server services.Server) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
+	//fmt.Printf("--> presence: MarshalServer took: %v.\n", time.Since(start))
+	//start = time.Now()
 	ttl := backend.TTL(s.Clock(), server.Expiry())
 	err = s.UpsertVal([]string{namespacesPrefix, server.GetNamespace(), nodesPrefix}, server.GetName(), data, ttl)
+	//fmt.Printf("--> presence: UpsertVal took: %v.\n", time.Since(start))
 	return trace.Wrap(err)
 }
 

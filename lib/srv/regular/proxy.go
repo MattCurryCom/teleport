@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -244,10 +245,12 @@ func (t *proxySubsys) proxyToHost(
 	// going to "local" CA? lets use the caching 'auth service' directly and avoid
 	// hitting the reverse tunnel link (it can be offline if the CA is down)
 	if site.GetName() == localDomain {
+		start := time.Now()
 		servers, err = t.srv.authService.GetNodes(t.namespace)
 		if err != nil {
 			t.log.Warn(err)
 		}
+		fmt.Printf("--> proxyToHost: GetNodes took: %v.\n", time.Since(start))
 	} else {
 		// "remote" CA? use a reverse tunnel to talk to it:
 		siteClient, err := site.CachingAccessPoint()

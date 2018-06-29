@@ -3,6 +3,8 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/json-iterator/go"
+
 	"sort"
 	"strings"
 	"time"
@@ -432,18 +434,22 @@ func GetServerSchema() string {
 // UnmarshalServerResource unmarshals role from JSON or YAML,
 // sets defaults and checks the schema
 func UnmarshalServerResource(data []byte, kind string) (Server, error) {
+	var fjson = jsoniter.ConfigCompatibleWithStandardLibrary
+	//var _ = jsoniter.ConfigCompatibleWithStandardLibrary
+
 	if len(data) == 0 {
 		return nil, trace.BadParameter("missing server data")
 	}
 	var h ResourceHeader
-	err := json.Unmarshal(data, &h)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
+	h.Version = V2
+	//err := fjson.Unmarshal(data, &h)
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
 	switch h.Version {
 	case "":
 		var s ServerV1
-		err := json.Unmarshal(data, &s)
+		err := fjson.Unmarshal(data, &s)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -451,9 +457,24 @@ func UnmarshalServerResource(data []byte, kind string) (Server, error) {
 		return s.V2(), nil
 	case V2:
 		var s ServerV2
-		if err := utils.UnmarshalWithSchema(GetServerSchema(), &s, data); err != nil {
-			return nil, trace.BadParameter(err.Error())
+		var _ = utils.UnmarshalWithSchema
+
+		iter := jsoniter.ConfigFastest.BorrowIterator(data)
+		defer jsoniter.ConfigFastest.ReturnIterator(iter)
+		iter.ReadVal(&s)
+		if iter.Error != nil {
+			fmt.Printf("--> here0: %v\n", iter.Error)
+			return nil, trace.Wrap(iter.Error)
 		}
+
+		//err := fjson.Unmarshal(data, &s)
+		//if err != nil {
+		//	return nil, trace.Wrap(err)
+		//}
+
+		//if err := utils.UnmarshalWithSchema(GetServerSchema(), &s, data); err != nil {
+		//	return nil, trace.BadParameter(err.Error())
+		//}
 
 		if err := s.CheckAndSetDefaults(); err != nil {
 			return nil, trace.Wrap(err)
@@ -496,6 +517,9 @@ func (*TeleportServerMarshaler) UnmarshalServer(bytes []byte, kind string) (Serv
 
 // MarshalServer marshals server into JSON
 func (*TeleportServerMarshaler) MarshalServer(s Server, opts ...MarshalOption) ([]byte, error) {
+	var fjson = jsoniter.ConfigCompatibleWithStandardLibrary
+	var _ = fjson.BorrowIterator
+
 	cfg, err := collectOptions(opts)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -514,13 +538,31 @@ func (*TeleportServerMarshaler) MarshalServer(s Server, opts ...MarshalOption) (
 		if !ok {
 			return nil, trace.BadParameter("don't know how to marshal %v", V1)
 		}
-		return json.Marshal(v.V1())
+		return fjson.Marshal(v.V1())
+
+		//stream := jsoniter.ConfigFastest.BorrowStream(nil)
+		//defer jsoniter.ConfigFastest.ReturnStream(stream)
+		//stream.WriteVal(v.V1())
+		//if stream.Error != nil {
+		//	fmt.Printf("--> here1: %v\n", stream.Error)
+		//	return nil, trace.Wrap(stream.Error)
+		//}
+		//return stream.Buffer(), nil
 	case V2:
 		v, ok := s.(serverv2)
 		if !ok {
 			return nil, trace.BadParameter("don't know how to marshal %v", V2)
 		}
-		return json.Marshal(v.V2())
+		return fjson.Marshal(v.V2())
+
+		//stream := jsoniter.ConfigFastest.BorrowStream(nil)
+		//defer jsoniter.ConfigFastest.ReturnStream(stream)
+		//stream.WriteVal(v.V2())
+		//if stream.Error != nil {
+		//	fmt.Printf("--> here2: %v\n", stream.Error)
+		//	return nil, trace.Wrap(stream.Error)
+		//}
+		//return stream.Buffer(), nil
 	default:
 		return nil, trace.BadParameter("version %v is not supported", version)
 	}
