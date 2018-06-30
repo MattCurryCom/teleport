@@ -18,6 +18,8 @@ package dir
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/url"
@@ -32,8 +34,10 @@ import (
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
+
+var _ = fmt.Printf
 
 const (
 	defaultDirMode  os.FileMode = 0770
@@ -62,7 +66,7 @@ type Backend struct {
 	// InternalClock is a test-friendly source of current time
 	InternalClock clockwork.Clock
 
-	*log.Entry
+	log *logrus.Entry
 }
 
 func (b *Backend) Clock() clockwork.Clock {
@@ -87,9 +91,9 @@ func New(params backend.Params) (backend.Backend, error) {
 	bk := &Backend{
 		RootDir:       rootDir,
 		InternalClock: clockwork.NewRealClock(),
-		Entry: log.WithFields(log.Fields{
+		log: logrus.WithFields(logrus.Fields{
 			trace.Component: "backend:dir",
-			trace.ComponentFields: log.Fields{
+			trace.ComponentFields: logrus.Fields{
 				"dir": rootDir,
 			},
 		}),
@@ -104,21 +108,168 @@ func New(params backend.Params) (backend.Backend, error) {
 	return backend.NewSanitizer(bk), nil
 }
 
+func (bk *Backend) flatten(bucket []string) string {
+	p := strings.Join(bucket, "/")
+	return bk.RootDir + "/" + url.QueryEscape(p)
+}
+
 // GetItems is a function that returns keys in batch
 func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
-	keys, err := bk.GetKeys(bucket)
+	var out []backend.Item
+
+	// Get a list of all buckets in the backend.
+	files, err := ioutil.ReadDir(path.Join(bk.RootDir))
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return nil, trace.ConvertSystemError(err)
 	}
-	var items []backend.Item
-	for _, key := range keys {
-		v, err := bk.GetVal(bucket, key)
+
+	// Loop over all buckets.
+	for _, fi := range files {
+		// Skip over any buckets without a matching prefix.
+		if !strings.HasPrefix(bk.RootDir+"/"+fi.Name(), bk.flatten(bucket)) {
+			continue
+		}
+
+		// The bucket matches the prefix.
+		f, err := os.OpenFile(bk.RootDir+"/"+fi.Name(), os.O_RDONLY, defaultFileMode)
+		if err != nil {
+			return nil, trace.ConvertSystemError(err)
+		}
+		defer f.Close()
+
+		// Lock the file so no one else can access it.
+		if err := utils.FSReadLock(f); err != nil {
+			return nil, trace.Wrap(err)
+		}
+		defer utils.FSUnlock(f)
+
+		// Read the file into a map of key/value pairs.
+		var items map[string][]byte
+		bytes, err := ioutil.ReadAll(f)
+		if err != nil {
+			return nil, trace.ConvertSystemError(err)
+		}
+		err = json.Unmarshal(bytes, &items)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-		items = append(items, backend.Item{Key: key, Value: v})
+
+		// Flatten all keys and return them to the caller.
+		for k, v := range items {
+			fff := bk.RootDir + "/" + fi.Name()
+			if fff != bk.flatten(bucket) {
+				fmt.Printf("--> %v.\n", fff)
+				fmt.Printf("--> %v.\n", bk.flatten(bucket))
+				s, err := suffix(fff, bk.flatten(bucket))
+				if err != nil {
+					return nil, trace.Wrap(err)
+				}
+				out = append(out, backend.Item{
+					Key:   s,
+					Value: v,
+				})
+
+				continue
+			}
+
+			out = append(out, backend.Item{
+				Key:   k,
+				Value: v,
+			})
+		}
 	}
-	return items, nil
+
+	return out, nil
+}
+
+func suffix(fullpath string, prefix string) (string, error) {
+	df, err := url.QueryUnescape(fullpath)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	dp, err := url.QueryUnescape(prefix)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+
+	remain := df[len(dp)+1:]
+	fmt.Printf("--> remain: %v\n", remain)
+	vals := strings.Split(remain, "/")
+	return vals[0], nil
+}
+
+func isEmpty(f *os.File) (bool, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return false, trace.Wrap(err)
+	}
+
+	if fi.Size() > 0 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
+	// The bucket matches the prefix.
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR|os.O_EXCL, defaultFileMode)
+	if err != nil {
+		return trace.ConvertSystemError(err)
+	}
+	defer f.Close()
+
+	// Lock the bucket so no other go routines can access it.
+	if err := utils.FSWriteLock(f); err != nil {
+		return trace.Wrap(err)
+	}
+	defer utils.FSUnlock(f)
+
+	var items map[string][]byte
+
+	// Read the file into a map of key/value pairs.
+	ok, err := isEmpty(f)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	if !ok {
+		// Read bucket in.
+		bytes, err := ioutil.ReadAll(f)
+		if err != nil {
+			return trace.ConvertSystemError(err)
+		}
+
+		// Truncate the file
+		if _, err := f.Seek(0, 0); err != nil {
+			return trace.ConvertSystemError(err)
+		}
+		if err := f.Truncate(0); err != nil {
+			return trace.ConvertSystemError(err)
+		}
+
+		err = json.Unmarshal(bytes, &items)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+	} else {
+		items = make(map[string][]byte)
+	}
+
+	// Update the value in the map.
+	items[key] = val
+
+	// Marshal and write file back out.
+	bytes, err := json.Marshal(items)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	n, err := f.Write(bytes)
+	if err == nil && n < len(bytes) {
+		return trace.Wrap(io.ErrShortWrite)
+	}
+
+	return nil
 }
 
 func prefix(bucket []string) string {
@@ -248,6 +399,7 @@ func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, pr
 	return trace.Wrap(bk.applyTTL(dirPath, key, ttl))
 }
 
+/*
 // UpsertVal updates or inserts value with a given TTL into a bucket
 // ForeverTTL for no TTL
 func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
@@ -279,6 +431,7 @@ func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.D
 	}
 	return trace.Wrap(bk.applyTTL(dirPath, key, ttl))
 }
+*/
 
 // GetVal return a value for a given key in the bucket
 func (bk *Backend) GetVal(bucket []string, key string) ([]byte, error) {
@@ -336,7 +489,7 @@ func (bk *Backend) DeleteKey(bucket []string, key string) error {
 	defer utils.FSUnlock(f)
 	if err := os.Remove(bk.ttlFile(dirPath, key)); err != nil {
 		if !os.IsNotExist(err) {
-			log.Warn(err)
+			bk.log.Warn(err)
 		}
 	}
 	return trace.ConvertSystemError(os.Remove(filename))
@@ -413,7 +566,7 @@ func removeFile(path string) error {
 
 // AcquireLock grabs a lock that will be released automatically in TTL
 func (bk *Backend) AcquireLock(token string, ttl time.Duration) (err error) {
-	bk.Debugf("AcquireLock(%s)", token)
+	bk.log.Debugf("AcquireLock(%s)", token)
 
 	if err = backend.ValidateLockTTL(ttl); err != nil {
 		return trace.Wrap(err)
@@ -440,7 +593,7 @@ func (bk *Backend) AcquireLock(token string, ttl time.Duration) (err error) {
 
 // ReleaseLock forces lock release before TTL
 func (bk *Backend) ReleaseLock(token string) (err error) {
-	bk.Debugf("ReleaseLock(%s)", token)
+	bk.log.Debugf("ReleaseLock(%s)", token)
 
 	if err = bk.DeleteKey([]string{locksBucket}, token); err != nil {
 		if !os.IsNotExist(err) {

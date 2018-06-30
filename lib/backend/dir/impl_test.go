@@ -17,14 +17,15 @@ limitations under the License.
 package dir
 
 import (
-	"sync/atomic"
+	"fmt"
+	//"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/test"
 	"github.com/gravitational/teleport/lib/utils"
-	"github.com/gravitational/trace"
+	//"github.com/gravitational/trace"
 
 	"github.com/jonboulle/clockwork"
 
@@ -48,6 +49,7 @@ func (s *Suite) SetUpSuite(c *check.C) {
 
 	dirName := c.MkDir()
 	s.bk, err = New(backend.Params{"path": dirName})
+	fmt.Printf("--> dirName: %v\n", dirName)
 
 	sb, ok := s.bk.(*backend.Sanitizer)
 	c.Assert(ok, check.Equals, true)
@@ -61,6 +63,24 @@ func (s *Suite) SetUpSuite(c *check.C) {
 	s.suite.B = s.bk
 }
 
+func (s *Suite) TestBasic(c *check.C) {
+	err := s.bk.UpsertVal([]string{"roles", "admin"}, "params", []byte("foo"), backend.Forever)
+	c.Assert(err, check.IsNil)
+	err = s.bk.UpsertVal([]string{"namespaces", "default", "nodes"}, "123", []byte("bar"), backend.Forever)
+	c.Assert(err, check.IsNil)
+
+	items, err := s.bk.GetItems([]string{"roles"})
+	c.Assert(err, check.IsNil)
+	fmt.Printf("--> items: %v.\n", items)
+
+	items, err = s.bk.GetItems([]string{"namespaces", "default", "nodes"})
+	c.Assert(err, check.IsNil)
+	fmt.Printf("--> items: %v.\n", items)
+
+	time.Sleep(60 * time.Second)
+}
+
+/*
 func (s *Suite) BenchmarkOperations(c *check.C) {
 	bucket := []string{"bench", "bucket"}
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
@@ -275,3 +295,4 @@ func (s *Suite) TestLocking(c *check.C) {
 	c.Assert(resumed, check.Equals, true)
 
 }
+*/
