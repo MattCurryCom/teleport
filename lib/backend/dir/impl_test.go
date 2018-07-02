@@ -25,7 +25,7 @@ import (
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/test"
 	"github.com/gravitational/teleport/lib/utils"
-	//"github.com/gravitational/trace"
+	"github.com/gravitational/trace"
 
 	"github.com/jonboulle/clockwork"
 
@@ -39,6 +39,7 @@ type Suite struct {
 	suite   test.BackendSuite
 }
 
+var _ = trace.AccessDenied
 var _ = check.Suite(&Suite{clock: clockwork.NewFakeClock()})
 
 // bootstrap check.v1:
@@ -63,6 +64,7 @@ func (s *Suite) SetUpSuite(c *check.C) {
 	s.suite.B = s.bk
 }
 
+/*
 func (s *Suite) TestBasic(c *check.C) {
 	err := s.bk.UpsertVal([]string{"roles", "admin"}, "params", []byte("foo"), backend.Forever)
 	c.Assert(err, check.IsNil)
@@ -79,6 +81,7 @@ func (s *Suite) TestBasic(c *check.C) {
 
 	time.Sleep(60 * time.Second)
 }
+*/
 
 /*
 func (s *Suite) BenchmarkOperations(c *check.C) {
@@ -97,6 +100,7 @@ func (s *Suite) BenchmarkOperations(c *check.C) {
 		}
 	}
 }
+*/
 
 func (s *Suite) TestConcurrentOperations(c *check.C) {
 	bucket := []string{"concurrent", "bucket"}
@@ -161,6 +165,11 @@ func (s *Suite) TestConcurrentOperations(c *check.C) {
 	}
 }
 
+func (s *Suite) TestCRUD(c *check.C) {
+	s.suite.BasicCRUD(c)
+}
+
+/*
 func (s *Suite) TestCompareAndSwap(c *check.C) {
 	s.suite.CompareAndSwap(c)
 }
