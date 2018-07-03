@@ -44,6 +44,9 @@ type Backend interface {
 	// CreateVal creates value with a given TTL and key in the bucket
 	// if the value already exists, it must return trace.AlreadyExistsError
 	CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error
+
+	BulkUpsertVal(bucket []string, newItems []Item, ttl time.Duration) error
+
 	// UpsertVal updates or inserts value with a given TTL into a bucket
 	// ForeverTTL for no TTL
 	UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error

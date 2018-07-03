@@ -111,6 +111,10 @@ func (n *nopBackend) CreateVal(bucket []string, key string, val []byte, ttl time
 	return nil
 }
 
+func (n *nopBackend) BulkUpsertVal(bucket []string, newItems []Item, ttl time.Duration) error {
+	return nil
+}
+
 func (n *nopBackend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
 	return nil
 }

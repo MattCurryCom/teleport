@@ -91,6 +91,19 @@ func (s *Sanitizer) CreateVal(bucket []string, key string, val []byte, ttl time.
 	return s.backend.CreateVal(bucket, key, val, ttl)
 }
 
+func (s *Sanitizer) BulkUpsertVal(bucket []string, newItems []Item, ttl time.Duration) error {
+	if !isSliceSafe(bucket) {
+		return trace.BadParameter(errorMessage)
+	}
+	for _, e := range newItems {
+		if !isStringSafe(e.Key) {
+			return trace.BadParameter(errorMessage)
+		}
+	}
+
+	return s.backend.BulkUpsertVal(bucket, newItems, ttl)
+}
+
 // UpsertVal updates or inserts value with a given TTL into a bucket. Use
 // backend.ForeverTTL for no TTL.
 func (s *Sanitizer) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {

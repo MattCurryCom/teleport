@@ -31,6 +31,8 @@ import (
 	. "gopkg.in/check.v1"
 )
 
+var _ = fmt.Printf
+
 func TestBackend(t *testing.T) { TestingT(t) }
 
 type BackendSuite struct {
@@ -76,7 +78,6 @@ func (s *BackendSuite) BasicCRUD(c *C) {
 	c.Assert(s.B.UpsertVal([]string{"a", "b"}, "akey", []byte("val2"), 0), IsNil)
 
 	_, err = s.B.GetVal([]string{"a"}, "b")
-	fmt.Printf("--> !!err: %#v\n", err)
 	c.Assert(trace.IsBadParameter(err), Equals, true, Commentf("%#v", err))
 	_, err = s.B.GetVal([]string{"a"}, "b")
 	c.Assert(trace.IsBadParameter(err), Equals, true, Commentf("%#v", err))
@@ -112,6 +113,8 @@ func (s *BackendSuite) BasicCRUD(c *C) {
 	c.Assert(s.B.UpsertVal([]string{"a", "c"}, "xkey", []byte("val3"), 0), IsNil)
 	c.Assert(s.B.UpsertVal([]string{"a", "c"}, "ykey", []byte("val4"), 0), IsNil)
 	c.Assert(s.B.DeleteBucket([]string{"a"}, "c"), IsNil)
+	c.Assert(s.B.DeleteBucket([]string{"a"}, "c"), NotNil)
+
 	_, err = s.B.GetVal([]string{"a", "c"}, "xkey")
 	c.Assert(trace.IsNotFound(err), Equals, true, Commentf("%#v", err))
 	_, err = s.B.GetVal([]string{"a", "c"}, "ykey")

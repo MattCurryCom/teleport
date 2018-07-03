@@ -208,6 +208,10 @@ func (b *bk) CompareAndSwapVal(path []string, key string, val []byte, prevVal []
 // maxOptimisticAttempts is the number of attempts optimistic locking
 const maxOptimisticAttempts = 5
 
+func (bk *bk) BulkUpsertVal(bucket []string, newItems []backend.Item, ttl time.Duration) error {
+	return trace.BadParameter("not implemented")
+}
+
 func (b *bk) UpsertVal(path []string, key string, val []byte, ttl time.Duration) error {
 	_, err := b.api.Set(
 		context.Background(),
