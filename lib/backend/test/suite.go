@@ -19,6 +19,7 @@ limitations under the License.
 package test
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,6 +76,7 @@ func (s *BackendSuite) BasicCRUD(c *C) {
 	c.Assert(s.B.UpsertVal([]string{"a", "b"}, "akey", []byte("val2"), 0), IsNil)
 
 	_, err = s.B.GetVal([]string{"a"}, "b")
+	fmt.Printf("--> !!err: %#v\n", err)
 	c.Assert(trace.IsBadParameter(err), Equals, true, Commentf("%#v", err))
 	_, err = s.B.GetVal([]string{"a"}, "b")
 	c.Assert(trace.IsBadParameter(err), Equals, true, Commentf("%#v", err))

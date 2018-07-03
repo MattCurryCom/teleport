@@ -316,7 +316,7 @@ func (bk *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.D
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
-	fmt.Printf("--> CreateVal: %v\n", bkt)
+	//fmt.Printf("--> CreateVal: %v\n", bkt)
 
 	defer f.Close()
 
@@ -548,7 +548,7 @@ func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, pr
 func (bk *Backend) GetVal(bucket []string, key string) ([]byte, error) {
 	// The bucket matches the prefix.
 	bkt := bk.flatten(bucket)
-	fmt.Printf("--> GetVal: %v\n", bkt)
+	//fmt.Printf("--> GetVal: %v\n", bkt)
 	f, err := os.OpenFile(bkt, os.O_RDONLY, defaultFileMode)
 	if err != nil {
 		fmt.Printf("--> here0, err=%v", err)
@@ -556,11 +556,21 @@ func (bk *Backend) GetVal(bucket []string, key string) ([]byte, error) {
 	}
 	defer f.Close()
 
+
 	// Lock the file so no one else can access it.
 	if err := utils.FSReadLock(f); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
+
+	if 
+		// GetVal() on a bucket must return 'BadParameter' error:
+		if fi, _ := os.Stat(filename); fi != nil && fi.IsDir() {
+			return nil, trace.BadParameter("%q is not a valid key", key)
+		}
+		return nil, trace.ConvertSystemError(err)
+
+
 
 	// Read bucket in.
 	bytes, err := ioutil.ReadAll(f)
