@@ -45,7 +45,7 @@ type Backend interface {
 	// if the value already exists, it must return trace.AlreadyExistsError
 	CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error
 
-	BulkUpsertVal(bucket []string, newItems []Item, ttl time.Duration) error
+	UpsertItems(bucket []string, items []Item) error
 
 	// UpsertVal updates or inserts value with a given TTL into a bucket
 	// ForeverTTL for no TTL
@@ -77,6 +77,8 @@ type Item struct {
 	Key string
 	// Value is an item value.
 	Value []byte
+	// TTL is the expire time for the item. Only used with UpsertItems.
+	TTL time.Duration
 }
 
 // backend.Params type defines a flexible unified back-end configuration API.

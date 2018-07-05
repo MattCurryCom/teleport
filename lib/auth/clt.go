@@ -563,6 +563,22 @@ func (c *Client) UpsertNode(s services.Server) error {
 	return trace.Wrap(err)
 }
 
+func (c *Client) UpsertNodes(namespace string, servers []services.Server) error {
+	if namespace == "" {
+		return trace.BadParameter("missing node namespace")
+	}
+	bytes, err := services.GetServerMarshaler().MarshalServers(servers)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	args := &upsertNodesReq{
+		Namespace: namespace,
+		Servers:   bytes,
+	}
+	_, err = c.PostJSON(c.Endpoint("namespaces", namespace, "nodes", "bulk"), args)
+	return trace.Wrap(err)
+}
+
 // GetNodes returns the list of servers registered in the cluster.
 func (c *Client) GetNodes(namespace string) ([]services.Server, error) {
 	if namespace == "" {

@@ -15,7 +15,8 @@ import (
 
 func main() {
 
-	for i := 0; i < 4000; i++ {
+	for i := 0; i < 500; i++ {
+		fmt.Printf("--> %v\n", i)
 		id := uuid.NewUUID()
 
 		server := &services.ServerV2{

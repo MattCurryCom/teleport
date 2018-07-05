@@ -228,7 +228,7 @@ func isEmpty(f *os.File) (bool, error) {
 	return true, nil
 }
 
-func (bk *Backend) BulkUpsertVal(bucket []string, newItems []backend.Item, ttl time.Duration) error {
+func (bk *Backend) UpsertItems(bucket []string, newItems []backend.Item) error {
 	// The bucket matches the prefix.
 	bkt := bk.flatten(bucket)
 	f, err := os.OpenFile(bkt, os.O_CREATE|os.O_RDWR, defaultFileMode)
@@ -275,7 +275,7 @@ func (bk *Backend) BulkUpsertVal(bucket []string, newItems []backend.Item, ttl t
 	}
 
 	for _, e := range newItems {
-		items[e.Key] = bk.bucketValueWithTTL(e.Value, ttl)
+		items[e.Key] = bk.bucketValueWithTTL(e.Value, e.TTL)
 	}
 
 	// Marshal and write file back out.
@@ -297,6 +297,7 @@ func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.D
 	bkt := bk.flatten(bucket)
 	f, err := os.OpenFile(bkt, os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
+		fmt.Printf("--> UpsertVal: err=%v\n", err)
 		return trace.ConvertSystemError(err)
 	}
 	defer f.Close()

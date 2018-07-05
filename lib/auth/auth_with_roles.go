@@ -296,6 +296,16 @@ func (a *AuthWithRoles) GenerateServerKeys(req GenerateServerKeysRequest) (*Pack
 	return a.authServer.GenerateServerKeys(req)
 }
 
+func (a *AuthWithRoles) UpsertNodes(namespace string, servers []services.Server) error {
+	if err := a.action(namespace, services.KindNode, services.VerbCreate); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := a.action(namespace, services.KindNode, services.VerbUpdate); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.UpsertNodes(namespace, servers)
+}
+
 func (a *AuthWithRoles) UpsertNode(s services.Server) error {
 	if err := a.action(s.GetNamespace(), services.KindNode, services.VerbCreate); err != nil {
 		return trace.Wrap(err)

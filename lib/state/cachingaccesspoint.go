@@ -20,7 +20,7 @@ package state
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
+	//"io/ioutil"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +28,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/backend"
-	"github.com/gravitational/teleport/lib/backend/boltbk"
+	//"github.com/gravitational/teleport/lib/backend/boltbk"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
@@ -427,15 +427,25 @@ func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server
 				}
 			}
 			fmt.Printf("--> CachingAuthClient: DeleteAllNodes took: %v.\n", time.Since(start))
+
 			start = time.Now()
+			if err := cs.presence.UpsertNodes(namespace, nodes); err != nil {
+				return nil, trace.Wrap(err)
+			}
 			for _, node := range nodes {
-				cs.setTTL(node)
-				if err := cs.presence.UpsertNode(node); err != nil {
-					return nil, trace.Wrap(err)
-				}
 				keys = append(keys, nodeKey(namespace, node.GetName()))
 			}
-			fmt.Printf("--> CachingAuthClient: UpsertNode loop took: %v.\n", time.Since(start))
+			fmt.Printf("--> CachingAuthClient: UpsertNodes took: %v.\n", time.Since(start))
+
+			//start = time.Now()
+			//for _, node := range nodes {
+			//	cs.setTTL(node)
+			//	if err := cs.presence.UpsertNode(node); err != nil {
+			//		return nil, trace.Wrap(err)
+			//	}
+			//	keys = append(keys, nodeKey(namespace, node.GetName()))
+			//}
+			//fmt.Printf("--> CachingAuthClient: UpsertNode loop took: %v.\n", time.Since(start))
 			return
 		},
 	})

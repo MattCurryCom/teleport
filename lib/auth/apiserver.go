@@ -103,6 +103,7 @@ func NewAPIServer(config *APIConfig) http.Handler {
 
 	// Servers and presence heartbeat
 	srv.POST("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.upsertNode))
+	srv.POST("/:version/namespaces/:namespace/nodes/bulk", srv.withAuth(srv.upsertNodes))
 	srv.GET("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.getNodes))
 	srv.POST("/:version/authservers", srv.withAuth(srv.upsertAuthServer))
 	srv.GET("/:version/authservers", srv.withAuth(srv.getAuthServers))
@@ -314,6 +315,30 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 			return nil, trace.Wrap(err)
 		}
 	}
+	return message("ok"), nil
+}
+
+type upsertNodesReq struct {
+	Servers   json.RawMessage `json:"servers"`
+	Namespace string          `json:"namespace"`
+}
+
+func (s *APIServer) upsertNodes(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	var req upsertNodesReq
+	if err := httplib.ReadJSON(r, &req); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	servers, err := services.GetServerMarshaler().UnmarshalServers(req.Servers)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	err = auth.UpsertNodes(req.Namespace, servers)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	return message("ok"), nil
 }
 

@@ -506,9 +506,35 @@ type ServerMarshaler interface {
 	UnmarshalServer(bytes []byte, kind string) (Server, error)
 	// MarshalServer to binary representation
 	MarshalServer(Server, ...MarshalOption) ([]byte, error)
+
+	UnmarshalServers(bytes []byte) ([]Server, error)
+	MarshalServers([]Server, ...MarshalOption) ([]byte, error)
 }
 
 type TeleportServerMarshaler struct{}
+
+func (*TeleportServerMarshaler) UnmarshalServers(bytes []byte) ([]Server, error) {
+	var servers []ServerV2
+	err := json.Unmarshal(bytes, &servers)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	out := make([]Server, len(servers))
+	for i, v := range servers {
+		out[i] = Server(&v)
+	}
+	return out, nil
+}
+
+func (*TeleportServerMarshaler) MarshalServers(s []Server, opts ...MarshalOption) ([]byte, error) {
+	bytes, err := json.Marshal(s)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return bytes, nil
+}
 
 // UnmarshalServer unmarshals server from JSON
 func (*TeleportServerMarshaler) UnmarshalServer(bytes []byte, kind string) (Server, error) {

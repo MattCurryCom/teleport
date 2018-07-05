@@ -480,7 +480,7 @@ func (b *DynamoDBBackend) CreateVal(path []string, key string, val []byte, ttl t
 	return b.createKey(fullPath, val, ttl, false)
 }
 
-func (b *DynamoDBBackend) BulkUpsertVal(bucket []string, newItems []backend.Item, ttl time.Duration) error {
+func (b *DynamoDBBackend) UpsertItems(bucket []string, items []backend.Item) error {
 	return trace.BadParameter("not implemented")
 }
 

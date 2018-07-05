@@ -23,7 +23,6 @@ import (
 // Presence records and reports the presence of all components
 // of the cluster - Nodes, Proxies and SSH nodes
 type Presence interface {
-
 	// UpsertLocalClusterName upserts local domain
 	UpsertLocalClusterName(name string) error
 
@@ -35,6 +34,8 @@ type Presence interface {
 
 	// DeleteAllNodes deletes all nodes in a namespace
 	DeleteAllNodes(namespace string) error
+
+	UpsertNodes(namespace string, servers []Server) error
 
 	// UpsertNode registers node presence, permanently if ttl is 0 or
 	// for the specified duration with second resolution if it's >= 1 second

@@ -171,7 +171,7 @@ func (b *BoltBackend) GetKeys(path []string) ([]string, error) {
 	return keys, nil
 }
 
-func (bk *BoltBackend) BulkUpsertVal(bucket []string, newItems []backend.Item, ttl time.Duration) error {
+func (bk *BoltBackend) UpsertItems(bucket []string, items []backend.Item) error {
 	return trace.BadParameter("not implemented")
 }
 

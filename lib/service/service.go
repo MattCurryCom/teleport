@@ -531,7 +531,12 @@ func NewTeleport(cfg *Config) (*TeleportProcess, error) {
 		}
 	}
 
-	storage, err := auth.NewProcessStorage(filepath.Join(cfg.DataDir, teleport.ComponentProcess))
+	procPath := filepath.Join(cfg.DataDir, teleport.ComponentProcess)
+	err = os.MkdirAll(procPath, 0770)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	storage, err := auth.NewProcessStorage(procPath)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
