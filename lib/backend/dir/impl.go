@@ -56,7 +56,7 @@ const (
 	reservedPrefix = '.'
 )
 
-// fs.Backend implements backend.Backend interface using a regular
+// Backend implements backend.Backend interface using a regular
 // POSIX-style filesystem
 type Backend struct {
 	// RootDir is the root (home) directory where the backend
@@ -66,14 +66,16 @@ type Backend struct {
 	// InternalClock is a test-friendly source of current time
 	InternalClock clockwork.Clock
 
+	// log is a structured component logger.
 	log *logrus.Entry
 }
 
+// Clock returns the clock used by this backend.
 func (b *Backend) Clock() clockwork.Clock {
 	return b.InternalClock
 }
 
-// GetName
+// GetName returns the name of this backend.
 func GetName() string {
 	return backendName
 }
