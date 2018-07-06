@@ -1585,8 +1585,6 @@ func (set RoleSet) CheckLoginDuration(ttl time.Duration) ([]string, error) {
 func (set RoleSet) CheckAccessToServer(login string, s Server) error {
 	var errs []error
 
-	log.Errorf("CheckAccessToServer: login=%v, server=%v, set=%v", login, s, set)
-
 	// check deny rules first: a single matching namespace, label, or login from
 	// the deny role set prohibits access.
 	for _, role := range set {
@@ -1603,14 +1601,11 @@ func (set RoleSet) CheckAccessToServer(login string, s Server) error {
 
 	// check allow rules: namespace, label, and login have to all match in
 	// one role in the role set to be granted access.
-	fmt.Printf("--> CheckAccessToServer: Checking allow rules.\n")
 	for _, role := range set {
 		matchNamespace := MatchNamespace(role.GetNamespaces(Allow), s.GetNamespace())
 		matchLabels := MatchLabels(role.GetNodeLabels(Allow), s.GetAllLabels())
-		fmt.Printf("--> CheckAccessToServer: MatchLabels(Allow): role=%v, selector=%v, target=%v => result=%v.\n", role, role.GetNodeLabels(Allow), s.GetAllLabels(), matchLabels)
 		matchLogin := MatchLogin(role.GetLogins(Allow), login)
 		if matchNamespace && matchLabels && matchLogin {
-			fmt.Printf("--> CheckAccessToServer: Matched.\n")
 			return nil
 		}
 
@@ -1620,7 +1615,6 @@ func (set RoleSet) CheckAccessToServer(login string, s Server) error {
 	}
 
 	errorMessage := fmt.Sprintf("access to node %v is denied to role(s): %v", s.GetHostname(), errs)
-	fmt.Printf("--> CheckAccessToServer: Failed: %v.\n", errorMessage)
 
 	log.Warnf("[RBAC] Denied access to server: " + errorMessage)
 	return trace.AccessDenied(errorMessage)

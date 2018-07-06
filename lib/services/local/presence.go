@@ -18,7 +18,6 @@ package local
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"time"
 
@@ -138,7 +137,7 @@ func (s *PresenceService) getServers(kind, prefix string) ([]services.Server, er
 			}
 			return nil, trace.Wrap(err)
 		}
-		server, err := services.GetServerMarshaler().UnmarshalServer(data, kind)
+		server, err := services.GetServerMarshaler().UnmarshalServer(data, kind, services.SkipValidation(true))
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -182,7 +181,7 @@ func (s *PresenceService) GetNodes(namespace string) ([]services.Server, error) 
 	// Marshal values into a []services.Server slice.
 	servers := make([]services.Server, len(items))
 	for i, item := range items {
-		server, err := services.GetServerMarshaler().UnmarshalServer(item.Value, services.KindNode)
+		server, err := services.GetServerMarshaler().UnmarshalServer(item.Value, services.KindNode, services.SkipValidation(true))
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -195,11 +194,11 @@ func (s *PresenceService) GetNodes(namespace string) ([]services.Server, error) 
 }
 
 func (s *PresenceService) UpsertNodes(namespace string, servers []services.Server) error {
-	start := time.Now()
-
 	if namespace == "" {
 		return trace.BadParameter("missing node namespace")
 	}
+
+	start := time.Now()
 
 	var items []backend.Item
 	for _, server := range servers {
@@ -220,7 +219,7 @@ func (s *PresenceService) UpsertNodes(namespace string, servers []services.Serve
 		return trace.Wrap(err)
 	}
 
-	fmt.Printf("--> presence: UpsertNodes took: %v.\n", time.Since(start))
+	s.log.Debugf("UpsertNodes(%v) in %v", len(servers), time.Now().Sub(start))
 
 	return nil
 }
@@ -228,20 +227,22 @@ func (s *PresenceService) UpsertNodes(namespace string, servers []services.Serve
 // UpsertNode registers node presence, permanently if ttl is 0 or
 // for the specified duration with second resolution if it's >= 1 second
 func (s *PresenceService) UpsertNode(server services.Server) error {
-	//start := time.Now()
 	if server.GetNamespace() == "" {
 		return trace.BadParameter("missing node namespace")
 	}
+
 	data, err := services.GetServerMarshaler().MarshalServer(server)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	//fmt.Printf("--> presence: MarshalServer took: %v.\n", time.Since(start))
-	//start = time.Now()
 	ttl := backend.TTL(s.Clock(), server.Expiry())
+
 	err = s.UpsertVal([]string{namespacesPrefix, server.GetNamespace(), nodesPrefix}, server.GetName(), data, ttl)
-	//fmt.Printf("--> presence: UpsertVal took: %v.\n", time.Since(start))
-	return trace.Wrap(err)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
 }
 
 // GetAuthServers returns a list of registered servers

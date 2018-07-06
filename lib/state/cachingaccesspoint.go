@@ -436,16 +436,6 @@ func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server
 				keys = append(keys, nodeKey(namespace, node.GetName()))
 			}
 			fmt.Printf("--> CachingAuthClient: UpsertNodes took: %v.\n", time.Since(start))
-
-			//start = time.Now()
-			//for _, node := range nodes {
-			//	cs.setTTL(node)
-			//	if err := cs.presence.UpsertNode(node); err != nil {
-			//		return nil, trace.Wrap(err)
-			//	}
-			//	keys = append(keys, nodeKey(namespace, node.GetName()))
-			//}
-			//fmt.Printf("--> CachingAuthClient: UpsertNode loop took: %v.\n", time.Since(start))
 			return
 		},
 	})

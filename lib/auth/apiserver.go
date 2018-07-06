@@ -296,7 +296,6 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 	}
 	switch role {
 	case teleport.RoleNode:
-		start := time.Now()
 		namespace := p.ByName("namespace")
 		if !services.IsValidNamespace(namespace) {
 			return nil, trace.BadParameter("invalid namespace %q", namespace)
@@ -305,7 +304,6 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 		if err := auth.UpsertNode(server); err != nil {
 			return nil, trace.Wrap(err)
 		}
-		fmt.Printf("--> apiserver.go: UpsertNode took: %v.\n", time.Since(start))
 	case teleport.RoleAuth:
 		if err := auth.UpsertAuthServer(server); err != nil {
 			return nil, trace.Wrap(err)

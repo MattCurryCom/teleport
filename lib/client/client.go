@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
@@ -122,12 +121,10 @@ func (proxy *ProxyClient) FindServersByLabels(ctx context.Context, namespace str
 		return nil, trace.Wrap(err)
 	}
 
-	start := time.Now()
 	siteNodes, err := site.GetNodes(namespace)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	fmt.Printf("--> FindServersByLabels: GetNodes took: %v.\n", time.Since(start))
 
 	// look at every node on this site and see which ones match:
 	for _, node := range siteNodes {
