@@ -19,7 +19,6 @@ package dir
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net/url"
@@ -72,7 +71,8 @@ func GetName() string {
 	return backendName
 }
 
-type bucketValue struct {
+// bucketItem is the "Value" part of a key/value pair.
+type bucketItem struct {
 	Value      []byte    `json:"value"`
 	ExpiryTime time.Time `json:"expiry,omitempty"`
 }
@@ -129,7 +129,7 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 	var out []backend.Item
 
 	// Get a list of all buckets in the backend.
-	files, err := ioutil.ReadDir(path.Join(bk.RootDir))
+	files, err := ioutil.ReadDir(path.Join(bk.rootDir))
 	if err != nil {
 		return nil, trace.ConvertSystemError(err)
 	}
@@ -144,7 +144,7 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 			continue
 		}
 
-		// This bucket matches the prefix.
+		// This bucket matches the prefix, open file for read only.
 		f, err := os.OpenFile(pathToBucket, os.O_RDONLY, defaultFileMode)
 		if err != nil {
 			return nil, trace.ConvertSystemError(err)
@@ -157,45 +157,39 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 		}
 		defer utils.FSUnlock(f)
 
-		// Read the file into a map of key/value pairs.
-		var items map[string]bucketValue
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return nil, trace.ConvertSystemError(err)
-		}
-		err = json.Unmarshal(bytes, &items)
+		// Read in all items from the bucket.
+		items, err := readIn(f)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 
 		// Flatten all keys and return them to the caller.
 		for k, v := range items {
-			fff := bk.RootDir + "/" + fi.Name()
-			if fff != bk.flatten(bucket) {
-				s, err := suffix(fff, bk.flatten(bucket))
+			var key string
+
+			// If bucket on disk and the requested bucket were an exact match, return
+			// the key as-is.
+			//
+			// However, if this was a partial match, for example pathToBucket is
+			// "/roles/admin/params" but the bucketPrefix is "/roles/admin" then
+			// extract the suffix (in this case "admin") and use this as the key. This
+			// is consistent with our DynamoDB implementation.
+			if pathToBucket == bucketPrefix {
+				key = k
+			} else {
+				key, err = suffix(pathToBucket, bucketPrefix)
 				if err != nil {
 					return nil, trace.Wrap(err)
 				}
-
-				if bk.isExpired(v) {
-					//bk.DeleteKey(bucket, key)
-					continue
-				}
-
-				out = append(out, backend.Item{
-					Key:   s,
-					Value: v.Value,
-				})
-
-				continue
 			}
 
+			// If the bucket item is expired, don't include it in the output. It is
+			// removed in CreateVal or GetKey.
 			if bk.isExpired(v) {
 				continue
 			}
-
 			out = append(out, backend.Item{
-				Key:   k,
+				Key:   key,
 				Value: v.Value,
 			})
 		}
@@ -209,293 +203,189 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 	return out, nil
 }
 
-// CreateVal creates value with a given TTL and key in the bucket
-// if the value already exists, returns AlreadyExistsError
+// CreateVal creates a key/value pair with the given TTL in the bucket. If
+// the key already exists in the bucket, trace.AlreadyExists is returned.
 func (bk *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error {
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_RDWR|os.O_CREATE, defaultFileMode)
+	// Open file for read/write, and create if it doesn't already exist.
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
-		//if os.IsExist(err) {
-		//	return trace.AlreadyExists("%s/%s already exists", bkt, key)
-		//}
 		return trace.ConvertSystemError(err)
 	}
 	defer f.Close()
 
-	// Lock the bucket so no other go routines can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	var items map[string]bucketValue
-
-	// Read the file into a map of key/value pairs.
-	ok, err := isEmpty(f)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	if !ok {
-		// Read bucket in.
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return trace.ConvertSystemError(err)
-		}
 
-		err = json.Unmarshal(bytes, &items)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-	} else {
-		items = make(map[string]bucketValue)
+	// If the key exists and is not expired, return trace.AlreadyExists.
+	item, ok := items[key]
+	if ok && !bk.isExpired(item) {
+		return trace.AlreadyExists("key already exists")
 	}
 
-	// If the key exists, return a trace.AlreadyExists
-	_, ok = items[key]
-	if ok {
-		return trace.AlreadyExists("file already exists")
-	}
+	// Otherwise, update the item in the bucket.
+	items[key] = bk.itemWithTTL(val, ttl)
 
-	// Update the value in the map.
-	items[key] = bk.bucketValueWithTTL(val, ttl)
-
-	// Marshal and write file back out.
-	bytes, err := json.Marshal(items)
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
 	if err != nil {
 		return trace.Wrap(err)
-	}
-	// Truncate the file
-	if _, err := f.Seek(0, 0); err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	if err := f.Truncate(0); err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	n, err := f.Write(bytes)
-	if err == nil && n < len(bytes) {
-		return trace.Wrap(io.ErrShortWrite)
 	}
 
 	return nil
-
 }
 
+// UpsertVal inserts (or updates if it already exists) the value for a key
+// with the given TTL.
 func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
-	// The bucket matches the prefix.
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_CREATE|os.O_RDWR, defaultFileMode)
+	// Open file for read/write, and create if it doesn't already exist.
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
 	defer f.Close()
 
-	// Lock the bucket so no other go routines can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	var items map[string]bucketValue
-
-	// Read the file into a map of key/value pairs.
-	ok, err := isEmpty(f)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	if !ok {
-		// Read bucket in.
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return trace.ConvertSystemError(err)
-		}
 
-		// Truncate the file
-		if _, err := f.Seek(0, 0); err != nil {
-			return trace.ConvertSystemError(err)
-		}
-		if err := f.Truncate(0); err != nil {
-			return trace.ConvertSystemError(err)
-		}
+	// Otherwise, update the item in the bucket.
+	items[key] = bk.itemWithTTL(val, ttl)
 
-		err = json.Unmarshal(bytes, &items)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-	} else {
-		items = make(map[string]bucketValue)
-	}
-
-	// Update the value in the map.
-	items[key] = bk.bucketValueWithTTL(val, ttl)
-
-	// Marshal and write file back out.
-	bytes, err := json.Marshal(items)
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
 	if err != nil {
 		return trace.Wrap(err)
-	}
-	n, err := f.Write(bytes)
-	if err == nil && n < len(bytes) {
-		return trace.Wrap(io.ErrShortWrite)
 	}
 
 	return nil
 }
 
+// UpsertItems inserts (or updates if it already exists) all passed in
+// backend.Items with the given TTL.
 func (bk *Backend) UpsertItems(bucket []string, newItems []backend.Item) error {
-	// The bucket matches the prefix.
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_CREATE|os.O_RDWR, defaultFileMode)
+	// Open file for read/write, and create if it doesn't already exist.
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
 	defer f.Close()
 
-	// Lock the bucket so no other go routines can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	var items map[string]bucketValue
-
-	// Read the file into a map of key/value pairs.
-	ok, err := isEmpty(f)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	if !ok {
-		// Read bucket in.
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return trace.ConvertSystemError(err)
-		}
 
-		err = json.Unmarshal(bytes, &items)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-	} else {
-		items = make(map[string]bucketValue)
-	}
-
+	// Update items in bucket.
 	for _, e := range newItems {
-		items[e.Key] = bk.bucketValueWithTTL(e.Value, e.TTL)
+		items[e.Key] = bk.itemWithTTL(e.Value, e.TTL)
 	}
 
-	// Marshal and write file back out.
-	bytes, err := json.Marshal(items)
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
 	if err != nil {
 		return trace.Wrap(err)
-	}
-
-	// Truncate the file
-	if _, err := f.Seek(0, 0); err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	if err := f.Truncate(0); err != nil {
-		return trace.ConvertSystemError(err)
-	}
-
-	n, err := f.Write(bytes)
-	if err == nil && n < len(bytes) {
-		return trace.Wrap(io.ErrShortWrite)
 	}
 
 	return nil
-
 }
 
 // GetVal return a value for a given key in the bucket
 func (bk *Backend) GetVal(bucket []string, key string) ([]byte, error) {
-	// The bucket matches the prefix.
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_RDWR, defaultFileMode)
+	// Open file for read/write (write needed to delete expired keys).
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_RDWR, defaultFileMode)
 	if err != nil {
-		// Get a list of all buckets in the backend.
-		files, er := ioutil.ReadDir(path.Join(bk.RootDir))
+		// GetVal on a bucket needs to return trace.BadParameter. If opening the
+		// bucket failed a partial match up to a bucket may still exist. To support
+		// returning trace.BadParameter in this situation, loop over all keys in the
+		// backend and see if any match the prefix. If any match the prefix return
+		// trace.BadParameter, otherwise return the original error.
+		files, er := ioutil.ReadDir(path.Join(bk.rootDir))
 		if er != nil {
-			return nil, trace.ConvertSystemError(err)
+			return nil, trace.ConvertSystemError(er)
 		}
 		var matched int
 		for _, fi := range files {
-			// Skip over any buckets without a matching prefix.
-			if strings.HasPrefix(bk.RootDir+"/"+fi.Name(), bk.flatten(bucket)+"%2F"+key) {
+			pathToBucket := bk.pathToBucket(fi.Name())
+			fullBucket := append(bucket, key)
+			bucketPrefix := bk.flatten(fullBucket)
+
+			// Prefix matched, for example if pathToBucket is "/foo/bar/baz" and
+			// bucketPrefix is "/foo/bar".
+			if strings.HasPrefix(pathToBucket, bucketPrefix) {
 				matched = matched + 1
 			}
 		}
 		if matched > 0 {
-			return nil, trace.BadParameter("%q is not a valid key", key)
+			return nil, trace.BadParameter("%v is not a valid key", key)
 		}
 		return nil, trace.ConvertSystemError(err)
 	}
 	defer f.Close()
 
-	// Lock the file so no one else can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	// Read bucket in.
-	bytes, err := ioutil.ReadAll(f)
-	if err != nil {
-		return nil, trace.ConvertSystemError(err)
-	}
-
-	// this could happen when CreateKey or UpsertKey created a file
-	// but, GetVal managed to get readLock right after it,
-	// so there are no contents there
-	if len(bytes) == 0 {
-		return nil, trace.NotFound("key %q is not found", key)
-	}
-
-	var items map[string]bucketValue
-
-	err = json.Unmarshal(bytes, &items)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	val, ok := items[key]
+	// If the key does not exist, return trace.NotFound right away.
+	item, ok := items[key]
 	if !ok {
 		return nil, trace.NotFound("key %q is not found", key)
 	}
 
-	if bk.isExpired(val) {
+	// If the key is expired, remove it from the bucket and write it out and exit.
+	if bk.isExpired(item) {
 		delete(items, key)
 
-		// Marshal and write file back out.
-		bytes, err := json.Marshal(items)
+		// Write out updated items to the bucket.
+		err = writeOut(f, items)
 		if err != nil {
 			return nil, trace.Wrap(err)
-		}
-
-		// Truncate the file
-		if _, err := f.Seek(0, 0); err != nil {
-			return nil, trace.ConvertSystemError(err)
-		}
-		if err := f.Truncate(0); err != nil {
-			return nil, trace.ConvertSystemError(err)
-		}
-		n, err := f.Write(bytes)
-		if err == nil && n < len(bytes) {
-			return nil, trace.Wrap(io.ErrShortWrite)
 		}
 
 		return nil, trace.NotFound("key %q is not found", key)
 	}
 
-	return val.Value, nil
+	return item.Value, nil
 }
 
 // CompareAndSwapVal compares and swap values in atomic operation
 func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, prevVal []byte, ttl time.Duration) error {
-	// The bucket matches the prefix.
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_RDWR, defaultFileMode)
-	if er := trace.ConvertSystemError(err); err != nil {
+	// Open file for read/write (write needed to update item).
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_RDWR, defaultFileMode)
+	if err != nil {
+		er := trace.ConvertSystemError(err)
 		if trace.IsNotFound(er) {
 			return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
 		}
@@ -503,131 +393,83 @@ func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, pr
 	}
 	defer f.Close()
 
-	// Lock the bucket so no other go routines can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	var items map[string]bucketValue
-
-	// Read the file into a map of key/value pairs.
-	ok, err := isEmpty(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	if !ok {
-		// Read bucket in.
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return trace.ConvertSystemError(err)
-		}
-
-		err = json.Unmarshal(bytes, &items)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-	} else {
-		items = make(map[string]bucketValue)
-	}
-
-	oldVal, ok := items[key]
-	if !ok {
-		return trace.CompareFailed("%v/%v did not match expected value", bkt, key)
-	}
-
-	if bytes.Compare(oldVal.Value, prevVal) != 0 {
-		return trace.CompareFailed("%v/%v did not match expected value", bkt, key)
-	}
-
-	// Update the value in the map.
-	items[key] = bk.bucketValueWithTTL(val, ttl)
-
-	// Marshal and write file back out.
-	bytes, err := json.Marshal(items)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	// Truncate the file
-	if _, err := f.Seek(0, 0); err != nil {
-		return trace.ConvertSystemError(err)
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
+	if err != nil {
+		return trace.Wrap(err)
 	}
-	if err := f.Truncate(0); err != nil {
-		return trace.ConvertSystemError(err)
+
+	// Read in existing key. If it does not exist, is expired, or does not
+	// match, return trace.CompareFailed.
+	oldItem, ok := items[key]
+	if !ok {
+		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
 	}
-	n, err := f.Write(bytes)
-	if err == nil && n < len(bytes) {
-		return trace.Wrap(io.ErrShortWrite)
+	if bk.isExpired(oldItem) {
+		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
+	}
+	if bytes.Compare(oldItem.Value, prevVal) != 0 {
+		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
+	}
+
+	// The compare was successful, update the item.
+	items[key] = bk.itemWithTTL(val, ttl)
+
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
+	if err != nil {
+		return trace.Wrap(err)
 	}
 
 	return nil
-
 }
 
-// DeleteKey deletes a key in a bucket
+// DeleteKey deletes a key in a bucket.
 func (bk *Backend) DeleteKey(bucket []string, key string) error {
-	// The bucket matches the prefix.
-	bkt := bk.flatten(bucket)
-	f, err := os.OpenFile(bkt, os.O_RDWR, defaultFileMode)
+	// Open file for read/write.
+	f, err := os.OpenFile(bk.flatten(bucket), os.O_RDWR, defaultFileMode)
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
 	defer f.Close()
 
-	// Lock the bucket so no other go routines can access it.
+	// Lock the bucket so no one else can access it.
 	if err := utils.FSWriteLock(f); err != nil {
 		return trace.Wrap(err)
 	}
 	defer utils.FSUnlock(f)
 
-	var items map[string]bucketValue
-
-	// Read the file into a map of key/value pairs.
-	ok, err := isEmpty(f)
-	if err != nil {
-		return trace.NotFound("key not found")
-	}
-	if !ok {
-		// Read bucket in.
-		bytes, err := ioutil.ReadAll(f)
-		if err != nil {
-			return trace.ConvertSystemError(err)
-		}
-
-		err = json.Unmarshal(bytes, &items)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-	} else {
-		items = make(map[string]bucketValue)
-	}
-
-	_, ok = items[key]
-	if !ok {
-		return trace.NotFound("key not found")
-	}
-
-	delete(items, key)
-
-	// Marshal and write file back out.
-	bytes, err := json.Marshal(items)
+	// Read in all items from the bucket.
+	items, err := readIn(f)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	// Truncate the file
-	if _, err := f.Seek(0, 0); err != nil {
-		return trace.ConvertSystemError(err)
+	// If the key doesn't exist, return trace.NotFound.
+	_, ok := items[key]
+	if !ok {
+		return trace.NotFound("key %v not found", key)
 	}
-	if err := f.Truncate(0); err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	n, err := f.Write(bytes)
-	if err == nil && n < len(bytes) {
-		return trace.Wrap(io.ErrShortWrite)
+
+	// Otherwise, delete key.
+	delete(items, key)
+
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
+	if err != nil {
+		return trace.Wrap(err)
 	}
 
 	return nil
@@ -635,9 +477,9 @@ func (bk *Backend) DeleteKey(bucket []string, key string) error {
 
 // DeleteBucket deletes the bucket by a given path.
 func (bk *Backend) DeleteBucket(parent []string, bucket string) error {
-	file := bk.flatten(parent) + "%2F" + bucket
+	fullBucket := append(parent, bucket)
 
-	err := os.Remove(file)
+	err := os.Remove(bk.flatten(fullBucket))
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
@@ -695,7 +537,7 @@ func (bk *Backend) pathToBucket(bucket string) string {
 // directory returning the full path to the bucket on the filesystem.
 func (bk *Backend) flatten(bucket []string) string {
 	// Convert ["foo", "bar"] to "foo/bar"
-	raw := filepath.Join(bucket)
+	raw := filepath.Join(bucket...)
 
 	// URL encode bucket from "foo/bar" to "foo%2Fbar".
 	flat := url.QueryEscape(raw)
@@ -703,8 +545,10 @@ func (bk *Backend) flatten(bucket []string) string {
 	return filepath.Join(bk.rootDir, flat)
 }
 
-func (bk *Backend) bucketValueWithTTL(value []byte, ttl time.Duration) bucketValue {
-	bv := bucketValue{Value: value}
+// itemWithTTL returns a bucket item with TTL applied if the TTL was not
+// backend.Forever.
+func (bk *Backend) itemWithTTL(value []byte, ttl time.Duration) bucketItem {
+	bv := bucketItem{Value: value}
 	if ttl == backend.Forever {
 		return bv
 	}
@@ -713,7 +557,8 @@ func (bk *Backend) bucketValueWithTTL(value []byte, ttl time.Duration) bucketVal
 
 }
 
-func (bk *Backend) isExpired(bv bucketValue) bool {
+// isExpired checks if the bucket item is expired or not.
+func (bk *Backend) isExpired(bv bucketItem) bool {
 	if bv.ExpiryTime.IsZero() {
 		return false
 	}
@@ -722,31 +567,56 @@ func (bk *Backend) isExpired(bv bucketValue) bool {
 
 // readIn will read in the bucket and return a map of keys. The second return
 // value returns true to false to indicate if the file was empty or not.
-func readIn(f *os.File) (map[string]bucketValue, bool, error) {
-	// Check if the file is empty, return right away if it is.
+func readIn(f *os.File) (map[string]bucketItem, error) {
+	// If the file is empty, return an empty bucket.
 	ok, err := isEmpty(f)
 	if err != nil {
-		return nil, false, trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 	if ok {
-		return nil, true, nil
+		return map[string]bucketItem{}, nil
 	}
 
-	var items map[string]bucketValue
-
 	// The file is not empty, read it into a map.
+	var items map[string]bucketItem
 	bytes, err := ioutil.ReadAll(f)
 	if err != nil {
-		return nil, false, trace.ConvertSystemError(err)
+		return nil, trace.ConvertSystemError(err)
 	}
 	err = json.Unmarshal(bytes, &items)
 	if err != nil {
-		return nil, false, trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
-	return items, false, nil
+	return items, nil
 }
 
+// writeOut will truncate the file and write out the items to the file f.
+func writeOut(f *os.File, items map[string]bucketItem) error {
+	// Marshal items to disk format.
+	bytes, err := json.Marshal(items)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// Truncate the file.
+	if _, err := f.Seek(0, 0); err != nil {
+		return trace.ConvertSystemError(err)
+	}
+	if err := f.Truncate(0); err != nil {
+		return trace.ConvertSystemError(err)
+	}
+
+	// Write out the contents to disk.
+	n, err := f.Write(bytes)
+	if err == nil && n < len(bytes) {
+		return trace.Wrap(io.ErrShortWrite)
+	}
+
+	return nil
+}
+
+// isEmpty checks if the file is empty or not.
 func isEmpty(f *os.File) (bool, error) {
 	fi, err := f.Stat()
 	if err != nil {
@@ -760,17 +630,28 @@ func isEmpty(f *os.File) (bool, error) {
 	return true, nil
 }
 
-func suffix(fullpath string, prefix string) (string, error) {
-	df, err := url.QueryUnescape(fullpath)
+// suffix returns the first bucket after where pathToBucket and bucketPrefix
+// differ.  For example, if pathToBucket is "/roles/admin/params" and
+// bucketPrefix is "/roles", then "admin" is returned.
+func suffix(pathToBucket string, bucketPrefix string) (string, error) {
+	full, err := url.QueryUnescape(pathToBucket)
 	if err != nil {
 		return "", trace.Wrap(err)
 	}
-	dp, err := url.QueryUnescape(prefix)
+	prefix, err := url.QueryUnescape(bucketPrefix)
 	if err != nil {
 		return "", trace.Wrap(err)
 	}
 
-	remain := df[len(dp)+1:]
-	vals := strings.Split(remain, "/")
+	remain := full[len(prefix)+1:]
+	if remain == "" {
+		return "", trace.BadParameter("unable to split %v", remain)
+	}
+
+	vals := strings.Split(remain, string(filepath.Separator))
+	if len(vals) == 0 {
+		return "", trace.BadParameter("unable to split %v", remain)
+	}
+
 	return vals[0], nil
 }
