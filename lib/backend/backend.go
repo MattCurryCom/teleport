@@ -44,12 +44,12 @@ type Backend interface {
 	// CreateVal creates value with a given TTL and key in the bucket
 	// if the value already exists, it must return trace.AlreadyExistsError
 	CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error
-
-	UpsertItems(bucket []string, items []Item) error
-
 	// UpsertVal updates or inserts value with a given TTL into a bucket
 	// ForeverTTL for no TTL
 	UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error
+	// UpsertItems updates or inserts all passed in backend.Items (with a TTL)
+	// into the given bucket.
+	UpsertItems(bucket []string, items []Item) error
 	// GetVal return a value for a given key in the bucket
 	GetVal(path []string, key string) ([]byte, error)
 	// CompareAndSwapVal compares and swaps values in atomic operation,
