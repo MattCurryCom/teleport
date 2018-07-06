@@ -103,7 +103,7 @@ func NewAPIServer(config *APIConfig) http.Handler {
 
 	// Servers and presence heartbeat
 	srv.POST("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.upsertNode))
-	srv.POST("/:version/namespaces/:namespace/nodes/bulk", srv.withAuth(srv.upsertNodes))
+	srv.PUT("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.upsertNodes))
 	srv.GET("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.getNodes))
 	srv.POST("/:version/authservers", srv.withAuth(srv.upsertAuthServer))
 	srv.GET("/:version/authservers", srv.withAuth(srv.getAuthServers))
@@ -319,22 +319,23 @@ func (s *APIServer) upsertServer(auth ClientI, role teleport.Role, w http.Respon
 }
 
 type upsertNodesReq struct {
-	Servers   json.RawMessage `json:"servers"`
+	Nodes     json.RawMessage `json:"nodes"`
 	Namespace string          `json:"namespace"`
 }
 
+// upsertNodes is used to perform bulk node upsertion.
 func (s *APIServer) upsertNodes(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
 	var req upsertNodesReq
 	if err := httplib.ReadJSON(r, &req); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	servers, err := services.GetServerMarshaler().UnmarshalServers(req.Servers)
+	nodes, err := services.GetServerMarshaler().UnmarshalServers(req.Nodes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	err = auth.UpsertNodes(req.Namespace, servers)
+	err = auth.UpsertNodes(req.Namespace, nodes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -344,10 +345,7 @@ func (s *APIServer) upsertNodes(auth ClientI, w http.ResponseWriter, r *http.Req
 
 // upsertNode is called by remote SSH nodes when they ping back into the auth service
 func (s *APIServer) upsertNode(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
-	start := time.Now()
-	i, err := s.upsertServer(auth, teleport.RoleNode, w, r, p, version)
-	fmt.Printf("--> apiserver.go: FULL UpsertNode took: %v.\n", time.Since(start))
-	return i, err
+	return s.upsertServer(auth, teleport.RoleNode, w, r, p, version)
 }
 
 // getNodes returns registered SSH nodes

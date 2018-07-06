@@ -490,8 +490,17 @@ func GetServerMarshaler() ServerMarshaler {
 type ServerMarshaler interface {
 	// UnmarshalServer from binary representation.
 	UnmarshalServer(bytes []byte, kind string, opts ...MarshalOption) (Server, error)
+
 	// MarshalServer to binary representation.
 	MarshalServer(Server, ...MarshalOption) ([]byte, error)
+
+	// UnmarshalServers is used to unmarshal multiple servers from their
+	// binary representation.
+	UnmarshalServers(bytes []byte) ([]Server, error)
+
+	// MarshalServers is used to marshal multiple servers to their binary
+	// representation.
+	MarshalServers([]Server) ([]byte, error)
 }
 
 type TeleportServerMarshaler struct{}
@@ -512,13 +521,14 @@ func (*TeleportServerMarshaler) MarshalServer(s Server, opts ...MarshalOption) (
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
 	type serverv1 interface {
 		V1() *ServerV1
 	}
-
 	type serverv2 interface {
 		V2() *ServerV2
 	}
+
 	version := cfg.GetVersion()
 	switch version {
 	case V1:
@@ -536,6 +546,33 @@ func (*TeleportServerMarshaler) MarshalServer(s Server, opts ...MarshalOption) (
 	default:
 		return nil, trace.BadParameter("version %v is not supported", version)
 	}
+}
+
+// UnmarshalServers is used to unmarshal multiple servers from their
+// binary representation.
+func (*TeleportServerMarshaler) UnmarshalServers(bytes []byte) ([]Server, error) {
+	var servers []ServerV2
+	err := json.Unmarshal(bytes, &servers)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	out := make([]Server, len(servers))
+	for i, v := range servers {
+		out[i] = Server(&v)
+	}
+	return out, nil
+}
+
+// MarshalServers is used to marshal multiple servers to their binary
+// representation.
+func (*TeleportServerMarshaler) MarshalServers(s []Server) ([]byte, error) {
+	bytes, err := json.Marshal(s)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return bytes, nil
 }
 
 // SortedServers is a sort wrapper that sorts servers by name

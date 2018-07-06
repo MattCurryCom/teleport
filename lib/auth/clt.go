@@ -567,15 +567,16 @@ func (c *Client) UpsertNodes(namespace string, servers []services.Server) error 
 	if namespace == "" {
 		return trace.BadParameter("missing node namespace")
 	}
+
 	bytes, err := services.GetServerMarshaler().MarshalServers(servers)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	args := &upsertNodesReq{
 		Namespace: namespace,
-		Servers:   bytes,
+		Nodes:     bytes,
 	}
-	_, err = c.PostJSON(c.Endpoint("namespaces", namespace, "nodes", "bulk"), args)
+	_, err = c.PutJSON(c.Endpoint("namespaces", namespace, "nodes"), args)
 	return trace.Wrap(err)
 }
 
