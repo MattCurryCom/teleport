@@ -77,7 +77,8 @@ type bucketItem struct {
 	ExpiryTime time.Time `json:"expiry,omitempty"`
 }
 
-// New creates a new instance of Filesystem backend, it conforms to backend.NewFunc API
+// New creates a new instance of a directory based backend that implements
+// backend.Backend.
 func New(params backend.Params) (backend.Backend, error) {
 	rootDir := params.GetString("path")
 	if rootDir == "" {
@@ -85,6 +86,12 @@ func New(params backend.Params) (backend.Backend, error) {
 	}
 	if rootDir == "" {
 		return nil, trace.BadParameter("filesystem backend: 'path' is not set")
+	}
+
+	// Ensure that the path to the root directory exists.
+	err := os.MkdirAll(rootDir, defaultDirMode)
+	if err != nil {
+		return nil, trace.ConvertSystemError(err)
 	}
 
 	bk := &Backend{

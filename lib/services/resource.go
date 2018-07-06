@@ -208,6 +208,8 @@ func collectOptions(opts []MarshalOption) (*MarshalConfig, error) {
 type MarshalConfig struct {
 	// Version specifies particular version we should marshal resources with
 	Version string
+	// SkipValidation is used to skip schema validation.
+	SkipValidation bool
 }
 
 // GetVersion returns explicitly provided version or sets latest as default
@@ -231,6 +233,14 @@ func WithVersion(v string) MarshalOption {
 		default:
 			return trace.BadParameter("version '%v' is not supported", v)
 		}
+	}
+}
+
+// SkipValidation is used to enable/disable schema validation.
+func SkipValidation(v bool) MarshalOption {
+	return func(c *MarshalConfig) error {
+		c.SkipValidation = v
+		return nil
 	}
 }
 
