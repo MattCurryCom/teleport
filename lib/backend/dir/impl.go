@@ -151,54 +151,45 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 			continue
 		}
 
-		// This bucket matches the prefix, open file for read only.
-		f, err := os.OpenFile(pathToBucket, os.O_RDONLY, defaultFileMode)
-		if err != nil {
-			return nil, trace.ConvertSystemError(err)
-		}
-		defer f.Close()
+		err := writeOperation(pathToBucket, os.O_RDWR, func(items map[string]bucketItem) error {
+			// Flatten all keys and return them to the caller.
+			for k, v := range items {
+				var key string
 
-		// Lock the bucket so no one else can access it.
-		if err := utils.FSReadLock(f); err != nil {
-			return nil, trace.Wrap(err)
-		}
-		defer utils.FSUnlock(f)
-
-		// Read in all items from the bucket.
-		items, err := readIn(f)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		// Flatten all keys and return them to the caller.
-		for k, v := range items {
-			var key string
-
-			// If bucket on disk and the requested bucket were an exact match, return
-			// the key as-is.
-			//
-			// However, if this was a partial match, for example pathToBucket is
-			// "/roles/admin/params" but the bucketPrefix is "/roles/admin" then
-			// extract the suffix (in this case "admin") and use this as the key. This
-			// is consistent with our DynamoDB implementation.
-			if pathToBucket == bucketPrefix {
-				key = k
-			} else {
-				key, err = suffix(pathToBucket, bucketPrefix)
-				if err != nil {
-					return nil, trace.Wrap(err)
+				// If bucket on disk and the requested bucket were an exact match, return
+				// the key as-is.
+				//
+				// However, if this was a partial match, for example pathToBucket is
+				// "/roles/admin/params" but the bucketPrefix is "/roles/admin" then
+				// extract the suffix (in this case "admin") and use this as the key. This
+				// is consistent with our DynamoDB implementation.
+				if pathToBucket == bucketPrefix {
+					key = k
+				} else {
+					key, err = suffix(pathToBucket, bucketPrefix)
+					if err != nil {
+						return trace.Wrap(err)
+					}
 				}
+
+				// If the bucket item is expired, update the bucket, and don't include
+				// it in the output.
+				if bk.isExpired(v) {
+					delete(items, k)
+					continue
+				}
+
+				out = append(out, backend.Item{
+					Key:   key,
+					Value: v.Value,
+				})
+
 			}
 
-			// If the bucket item is expired, don't include it in the output. It is
-			// removed in CreateVal or GetKey.
-			if bk.isExpired(v) {
-				continue
-			}
-			out = append(out, backend.Item{
-				Key:   key,
-				Value: v.Value,
-			})
+			return nil
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
 		}
 	}
 
@@ -213,36 +204,18 @@ func (bk *Backend) GetItems(bucket []string) ([]backend.Item, error) {
 // CreateVal creates a key/value pair with the given TTL in the bucket. If
 // the key already exists in the bucket, trace.AlreadyExists is returned.
 func (bk *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error {
-	// Open file for read/write, and create if it doesn't already exist.
-	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
-	if err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	defer f.Close()
+	err := writeOperation(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, func(items map[string]bucketItem) error {
+		// If the key exists and is not expired, return trace.AlreadyExists.
+		item, ok := items[key]
+		if ok && !bk.isExpired(item) {
+			return trace.AlreadyExists("key already exists")
+		}
 
-	// Lock the bucket so no one else can access it.
-	if err := utils.FSWriteLock(f); err != nil {
-		return trace.Wrap(err)
-	}
-	defer utils.FSUnlock(f)
+		// Otherwise, update the item in the bucket.
+		items[key] = bk.itemWithTTL(val, ttl)
 
-	// Read in all items from the bucket.
-	items, err := readIn(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// If the key exists and is not expired, return trace.AlreadyExists.
-	item, ok := items[key]
-	if ok && !bk.isExpired(item) {
-		return trace.AlreadyExists("key already exists")
-	}
-
-	// Otherwise, update the item in the bucket.
-	items[key] = bk.itemWithTTL(val, ttl)
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
+		return nil
+	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -253,30 +226,12 @@ func (bk *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.D
 // UpsertVal inserts (or updates if it already exists) the value for a key
 // with the given TTL.
 func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
-	// Open file for read/write, and create if it doesn't already exist.
-	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
-	if err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	defer f.Close()
+	err := writeOperation(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, func(items map[string]bucketItem) error {
+		// Update the item in the bucket.
+		items[key] = bk.itemWithTTL(val, ttl)
 
-	// Lock the bucket so no one else can access it.
-	if err := utils.FSWriteLock(f); err != nil {
-		return trace.Wrap(err)
-	}
-	defer utils.FSUnlock(f)
-
-	// Read in all items from the bucket.
-	items, err := readIn(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// Otherwise, update the item in the bucket.
-	items[key] = bk.itemWithTTL(val, ttl)
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
+		return nil
+	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -287,32 +242,14 @@ func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.D
 // UpsertItems inserts (or updates if it already exists) all passed in
 // backend.Items with the given TTL.
 func (bk *Backend) UpsertItems(bucket []string, newItems []backend.Item) error {
-	// Open file for read/write, and create if it doesn't already exist.
-	f, err := os.OpenFile(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, defaultFileMode)
-	if err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	defer f.Close()
+	err := writeOperation(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, func(items map[string]bucketItem) error {
+		// Update items in bucket.
+		for _, e := range newItems {
+			items[e.Key] = bk.itemWithTTL(e.Value, e.TTL)
+		}
 
-	// Lock the bucket so no one else can access it.
-	if err := utils.FSWriteLock(f); err != nil {
-		return trace.Wrap(err)
-	}
-	defer utils.FSUnlock(f)
-
-	// Read in all items from the bucket.
-	items, err := readIn(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// Update items in bucket.
-	for _, e := range newItems {
-		items[e.Key] = bk.itemWithTTL(e.Value, e.TTL)
-	}
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
+		return nil
+	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -389,8 +326,25 @@ func (bk *Backend) GetVal(bucket []string, key string) ([]byte, error) {
 
 // CompareAndSwapVal compares and swap values in atomic operation
 func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, prevVal []byte, ttl time.Duration) error {
-	// Open file for read/write (write needed to update item).
-	f, err := os.OpenFile(bk.flatten(bucket), os.O_RDWR, defaultFileMode)
+	err := writeOperation(bk.flatten(bucket), os.O_CREATE|os.O_RDWR, func(items map[string]bucketItem) error {
+		// Read in existing key. If it does not exist, is expired, or does not
+		// match, return trace.CompareFailed.
+		oldItem, ok := items[key]
+		if !ok {
+			return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
+		}
+		if bk.isExpired(oldItem) {
+			return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
+		}
+		if bytes.Compare(oldItem.Value, prevVal) != 0 {
+			return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
+		}
+
+		// The compare was successful, update the item.
+		items[key] = bk.itemWithTTL(val, ttl)
+
+		return nil
+	})
 	if err != nil {
 		er := trace.ConvertSystemError(err)
 		if trace.IsNotFound(er) {
@@ -398,83 +352,24 @@ func (bk *Backend) CompareAndSwapVal(bucket []string, key string, val []byte, pr
 		}
 		return trace.Wrap(er)
 	}
-	defer f.Close()
-
-	// Lock the bucket so no one else can access it.
-	if err := utils.FSWriteLock(f); err != nil {
-		return trace.Wrap(err)
-	}
-	defer utils.FSUnlock(f)
-
-	// Read in all items from the bucket.
-	items, err := readIn(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// Read in existing key. If it does not exist, is expired, or does not
-	// match, return trace.CompareFailed.
-	oldItem, ok := items[key]
-	if !ok {
-		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
-	}
-	if bk.isExpired(oldItem) {
-		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
-	}
-	if bytes.Compare(oldItem.Value, prevVal) != 0 {
-		return trace.CompareFailed("%v/%v did not match expected value", bucket, key)
-	}
-
-	// The compare was successful, update the item.
-	items[key] = bk.itemWithTTL(val, ttl)
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
-	if err != nil {
-		return trace.Wrap(err)
-	}
 
 	return nil
 }
 
 // DeleteKey deletes a key in a bucket.
 func (bk *Backend) DeleteKey(bucket []string, key string) error {
-	// Open file for read/write.
-	f, err := os.OpenFile(bk.flatten(bucket), os.O_RDWR, defaultFileMode)
-	if err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	defer f.Close()
+	err := writeOperation(bk.flatten(bucket), os.O_RDWR, func(items map[string]bucketItem) error {
+		// If the key doesn't exist, return trace.NotFound.
+		_, ok := items[key]
+		if !ok {
+			return trace.NotFound("key %v not found", key)
+		}
 
-	// Lock the bucket so no one else can access it.
-	if err := utils.FSWriteLock(f); err != nil {
-		return trace.Wrap(err)
-	}
-	defer utils.FSUnlock(f)
+		// Otherwise, delete key.
+		delete(items, key)
 
-	// Read in all items from the bucket.
-	items, err := readIn(f)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// If the key doesn't exist, return trace.NotFound.
-	_, ok := items[key]
-	if !ok {
-		return trace.NotFound("key %v not found", key)
-	}
-
-	// Otherwise, delete key.
-	delete(items, key)
-
-	// Write out updated items to the bucket.
-	err = writeOut(f, items)
+		return nil
+	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -570,6 +465,45 @@ func (bk *Backend) isExpired(bv bucketItem) bool {
 		return false
 	}
 	return bk.Clock().Now().After(bv.ExpiryTime)
+}
+
+// updateFunction is used to update items within a bucket.
+type updateFunction func(map[string]bucketItem) error
+
+// writeOperation opens and reads in a bucket then runs fn on the items read in.
+func writeOperation(prefix string, openFlag int, fn updateFunction) error {
+	// Open bucket with requested flags.
+	f, err := os.OpenFile(prefix, openFlag, defaultFileMode)
+	if err != nil {
+		return trace.ConvertSystemError(err)
+	}
+	defer f.Close()
+
+	// Lock the bucket so no one else can access it.
+	if err := utils.FSWriteLock(f); err != nil {
+		return trace.Wrap(err)
+	}
+	defer utils.FSUnlock(f)
+
+	// Read in all items from the bucket.
+	items, err := readIn(f)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// Run requested operations.
+	err = fn(items)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// Write out updated items to the bucket.
+	err = writeOut(f, items)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
 }
 
 // readIn will read in the bucket and return a map of keys. The second return
