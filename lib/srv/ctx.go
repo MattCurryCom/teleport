@@ -35,6 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/trace"
 
+	"github.com/jonboulle/clockwork"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -96,6 +97,10 @@ type IdentityContext struct {
 	// RoleSet is the roles this Teleport user is associated with. RoleSet is
 	// used to check RBAC permissions.
 	RoleSet services.RoleSet
+
+	// CertValidBefore is set to the expiry time of a certificate, or
+	// empty, if cert does not expire
+	CertValidBefore time.Time
 }
 
 // GetCertificate parses the SSH certificate bytes and returns a *ssh.Certificate.
@@ -183,6 +188,17 @@ type ServerContext struct {
 	// RemoteSession holds a SSH session to a remote server. Only used by the
 	// recording proxy.
 	RemoteSession *ssh.Session
+
+	// clientLastActive records the last time there was activity from the client
+	clientLastActive time.Time
+
+	// disconnectExpiredCert is set to time when/if the certificate should
+	// be disconnected, set to empty if no disconect is necessary
+	disconnectExpiredCert time.Time
+
+	// clientIdleTimeout is set to the timeout on
+	// on client inactivity, set to 0 if not setup
+	clientIdleTimeout time.Duration
 }
 
 // NewServerContext creates a new *ServerContext which is used to pass and
@@ -203,6 +219,12 @@ func NewServerContext(srv Server, conn *ssh.ServerConn, identityContext Identity
 		ClusterName:       conn.Permissions.Extensions[utils.CertTeleportClusterName],
 		ClusterConfig:     clusterConfig,
 		Identity:          identityContext,
+		clientIdleTimeout: identityContext.RoleSet.AdjustDisconnectExpiredCert(clusterConfig.GetDisconnectExpiredCert()),
+	}
+
+	disconnectExpiredCert := identityContext.RoleSet.AdjustDisconnectExpiredCert(clusterConfig.GetDisconnectExpiredCert())
+	if !identityContext.CertValidBefore.IsZero() && disconnectExpiredCert {
+		ctx.disconnectExpiredCert = identityContext.CertValidBefore
 	}
 
 	ctx.Entry = log.WithFields(log.Fields{
@@ -213,6 +235,8 @@ func NewServerContext(srv Server, conn *ssh.ServerConn, identityContext Identity
 			"login":        ctx.Identity.Login,
 			"teleportUser": ctx.Identity.TeleportUser,
 			"id":           ctx.id,
+			"idle":         ctx.clientIdleTimeout,
+			"expires":      ctx.disconnectExpiredCert,
 		},
 	})
 
@@ -263,6 +287,50 @@ func (c *ServerContext) CreateOrJoinSession(reg *SessionRegistry) error {
 	}
 
 	return nil
+}
+
+// DisconnectVerdict is a struct with a disconnect
+// verdict with info on whether or not the client should be disconnected and why
+type DisconnectVerdict struct {
+	// ShouldDisconnect is true when the client should be disconnected
+	ShouldDisconnect bool
+	// Reason explains the reason for disconnect
+	Reason string
+}
+
+// ShouldDisconnect returns true if user activity settings
+// request the session to be disconnected
+func (c *ServerContext) ShouldDisconnect(clock clockwork.Clock) DisconnectVerdict {
+	now := clock.Now().UTC()
+	switch {
+	case c.clientIdleTimeout != 0 && now.Sub(c.clientLastActive) > c.clientIdleTimeout:
+		v := DisconnectVerdict{ShouldDisconnect: true}
+		if c.clientLastActive == 0 {
+			v.Reason = "client reported no activity"
+		} else {
+			v.Reason = fmt.Sprintf("client is idle for %v, exceeded idle timeout of %v", now.Sub(c.clientLastActive), c.clientIdleTimeout)
+		}
+		return v
+	case !c.disconnectExpiredCert.IsZero() && now.Sub(c.disconnectExpiredCert) > 0:
+		return DisconnectVerdict{ShouldDisconnect: true, Reason: fmt.Sprintf("client certificate expired at %v", c.clientLastActive)}
+	default:
+		return DisconnectVerdict{ShouldDisconnect: false}
+	}
+}
+
+// GetClientLastActive returns time when client was last active
+func (c *ServerContext) GetClientLastActive() time.Time {
+	c.RLock()
+	defer c.RUnlock()
+	return c.clientLastActive
+}
+
+// SetClientLastActive sets last recorded client activity associated with this context
+// either channel or session
+func (c *ServerContext) SetClientLastActive(t time.Time) {
+	c.Lock()
+	defer c.Unlock()
+	c.clientLastActive = t
 }
 
 // AddCloser adds any closer in ctx that will be called

@@ -223,6 +223,14 @@ const (
 	// CertificateFormat defines the format of the user certificate to allow
 	// compatibility with older versions of OpenSSH.
 	CertificateFormat = "cert_format"
+
+	// ClientIdleTimeout sets disconnect clients on idle timeout behavior,
+	// if set to 0 means do not disconnect, otherwise is set to the idle
+	// duration.
+	ClientIdleTimeout = "client_idle_timeout"
+
+	// DisconnectExpiredCert sets disconnect clients on expired certificates.
+	DisconnectExpiredCert = "disconnect_expired_cert"
 )
 
 const (
@@ -702,12 +710,14 @@ func (o RoleOptions) GetBoolean(key string) (bool, error) {
 		return false, trace.NotFound("key %q not found in options", key)
 	}
 
-	value, ok := valueI.(bool)
-	if !ok {
-		return false, trace.BadParameter("type %T for key %q is not a bool", valueI, key)
+	switch value := valueI.(type) {
+	case string:
+		return utils.ParseBool(value)
+	case bool:
+		return value, nil
+	default:
+		return false, trace.BadParameter("type %T for key %q is not supported", valueI, key)
 	}
-
-	return value, nil
 }
 
 // GetDuration returns the option as a services.Duration or returns an error.
@@ -716,13 +726,20 @@ func (o RoleOptions) GetDuration(key string) (Duration, error) {
 	if !ok {
 		return NewDuration(defaults.MinCertDuration), trace.NotFound("key %q not found in options", key)
 	}
-
-	value, ok := valueI.(Duration)
-	if !ok {
-		return NewDuration(defaults.MinCertDuration), trace.BadParameter("type %T for key %q is not a Duration", valueI, key)
+	switch value := valueI.(type) {
+	case string:
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return NewDuration(defaults.MinCertDuration), trace.BadParameter("type %T for key %q is not a duration, try values like '1h', '1h'", valueI, key)
+		}
+		return NewDuration(d), nil
+	case Duration:
+		return value, nil
+	case time.Duration:
+		return NewDuration(value), nil
+	default:
+		return NewDuration(defaults.MinCertDuration), trace.BadParameter("type %T for key %q is not a valid duration, try values like '1h', '1h'", valueI, key)
 	}
-
-	return value, nil
 }
 
 // Equals checks if all the key/values in the RoleOptions map match.
@@ -1303,6 +1320,15 @@ type AccessChecker interface {
 	// for this role set, otherwise it returns ttl unchanged
 	AdjustSessionTTL(ttl time.Duration) time.Duration
 
+	// AdjustClientIdleTimeout adjusts requested idle timeout
+	// to the lowest max allowed timeout, the most restricive
+	// option will be picked
+	AdjustClientIdleTimeout(ttl time.Duration) time.Duration
+
+	// AdjustDisconnectExpiredCert adjusts the value based on the role set
+	// the most restrictive option will be picked
+	AdjustDisconnectExpiredCert(disconnect bool) bool
+
 	// CheckAgentForward checks if the role can request agent forward for this
 	// user.
 	CheckAgentForward(login string) error
@@ -1469,6 +1495,47 @@ func (set RoleSet) AdjustSessionTTL(ttl time.Duration) time.Duration {
 		}
 	}
 	return ttl
+}
+
+// AdjustClientIdleTimeout adjusts requested idle timeout
+// to the lowest max allowed timeout, the most restrictive
+// option will be picked, negative values will be assumed as 0
+func (set RoleSet) AdjustClientIdleTimeout(timeout time.Duration) time.Duration {
+	if timeout < 0 {
+		timeout = 0
+	}
+	for _, role := range set {
+		roleTimeout, err := role.GetOptions().GetDuration(ClientIdleTimeout)
+		// 0 means not set, so can't be most restrictive, disregard it too
+		if err != nil || roleTimeout.Duration <= 0 {
+			continue
+		}
+		switch {
+		// in case if timeout is 0, means that incoming value
+		// does not restrict the idle timeout, pick any other value
+		// set by the role
+		case timeout == 0:
+			timeout = roleTimeout.Duration
+		case roleTimeout.Duration < timeout:
+			timeout = roleTimeout.Duration
+		}
+	}
+	return timeout
+}
+
+// AdjustDisconnectExpiredCert adjusts the value based on the role set
+// the most restrictive option will be picked
+func (set RoleSet) AdjustDisconnectExpiredCert(disconnect bool) bool {
+	for _, role := range set {
+		roleDisconnect, err := role.GetOptions().GetBoolean(ClientIdleTimeout)
+		if err != nil {
+			continue
+		}
+		if roleDisconnect {
+			disconnect = roleDisconnect
+		}
+	}
+	return disconnect
 }
 
 // CheckLoginDuration checks if role set can login up to given duration and
@@ -1703,6 +1770,63 @@ func NewDuration(d time.Duration) Duration {
 	return Duration{Duration: d}
 }
 
+// NewBool returns Bool struct based on bool value
+func NewBool(b bool) Bool {
+	return Bool{bool: b}
+}
+
+// Bool is a wrapper around boolean values
+type Bool struct {
+	bool
+}
+
+// MarshalJSON marshals Duration to string
+func (b Bool) MarshalJSON() ([]byte, error) {
+	return json.Marshal(fmt.Sprintf("%t", b.bool))
+}
+
+// UnmarshalJSON unmarshals JSON from string or bool,
+// in case if value is missing or not recognized, defaults to false
+func (b *Bool) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	// check if it's a bool variable
+	if err := json.Unmarshal(data, &b.bool); err == nil {
+		return nil
+	}
+	// also support string variables
+	var stringVar string
+	if err := json.Unmarshal(data, &stringVar); err != nil {
+		return trace.Wrap(err)
+	}
+	v, err := utils.ParseBool(stringVar)
+	if err != nil {
+		b.bool = false
+		return nil
+	}
+	b.bool = v
+	return nil
+}
+
+func (b *Bool) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var boolVar bool
+	if err := unmarshal(&boolVar); err == nil {
+		b.bool = boolVar
+	}
+	var stringVar string
+	if err := unmarshal(&stringVar); err != nil {
+		return trace.Wrap(err)
+	}
+	v, err := utils.ParseBool(stringVar)
+	if err != nil {
+		b.bool = v
+		return nil
+	}
+	b.bool = v
+	return nil
+}
+
 // Duration is a wrapper around duration to set up custom marshal/unmarshal
 type Duration struct {
 	time.Duration
@@ -1735,11 +1859,15 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if err := unmarshal(&stringVar); err != nil {
 		return trace.Wrap(err)
 	}
-	out, err := time.ParseDuration(stringVar)
-	if err != nil {
-		return trace.BadParameter(err.Error())
+	if stringVar == "never" {
+		d.Duration = 0
+	} else {
+		out, err := time.ParseDuration(stringVar)
+		if err != nil {
+			return trace.BadParameter(err.Error())
+		}
+		d.Duration = out
 	}
-	d.Duration = out
 	return nil
 }
 

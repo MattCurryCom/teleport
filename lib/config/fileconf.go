@@ -444,11 +444,11 @@ func (s *Service) Configured() bool {
 
 // Enabled determines if a given "_service" section has been set to 'true'
 func (s *Service) Enabled() bool {
-	switch strings.ToLower(s.EnabledFlag) {
-	case "", "yes", "yeah", "y", "true", "1":
-		return true
+	v, err := utils.ParseBool(s.EnabledFlag)
+	if err != nil {
+		return false
 	}
-	return false
+	return v
 }
 
 // Disabled returns 'true' if the service has been deliberately turned off
@@ -521,6 +521,13 @@ type Auth struct {
 	// PublicAddr sets SSH host principals and TLS DNS names to auth
 	// server certificates
 	PublicAddr Strings `yaml:"public_addr,omitempty"`
+
+	// ClientIdleTimeout sets global cluster default setting for client idle timeouts
+	ClientIdleTimeout services.Duration `yaml:"client_idle_timeout"`
+
+	// DisconnectExpiredCert provides disconnect expired certificate setting -
+	// if true, connections with expired client certificates will get disconnected
+	DisconnectExpiredCert services.Bool `yaml:"disconnect_expired_cert"`
 }
 
 // TrustedCluster struct holds configuration values under "trusted_clusters" key
