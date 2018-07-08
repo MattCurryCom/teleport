@@ -128,6 +128,11 @@ type Server struct {
 	dataDir string
 }
 
+// GetClock returns server clock implementation
+func (s *Server) GetClock() clockwork.Clock {
+	return s.clock
+}
+
 // GetDataDir returns server data dir
 func (s *Server) GetDataDir() string {
 	return s.dataDir

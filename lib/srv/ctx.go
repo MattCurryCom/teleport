@@ -21,6 +21,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -199,6 +200,12 @@ type ServerContext struct {
 	// clientIdleTimeout is set to the timeout on
 	// on client inactivity, set to 0 if not setup
 	clientIdleTimeout time.Duration
+
+	// cancelContext signals closure to all outstanding operations
+	cancelContext context.Context
+
+	// cancel is called whenever server context is closed
+	cancel context.CancelFunc
 }
 
 // NewServerContext creates a new *ServerContext which is used to pass and
@@ -239,6 +246,10 @@ func NewServerContext(srv Server, conn *ssh.ServerConn, identityContext Identity
 			"expires":      ctx.disconnectExpiredCert,
 		},
 	})
+
+	if !ctx.disconnectExpiredCert.IsZero() || ctx.clientIdleTimeout != 0 {
+		go ctx.periodicCheckDisconnect()
+	}
 
 	return ctx, nil
 }
@@ -289,32 +300,66 @@ func (c *ServerContext) CreateOrJoinSession(reg *SessionRegistry) error {
 	return nil
 }
 
-// DisconnectVerdict is a struct with a disconnect
-// verdict with info on whether or not the client should be disconnected and why
-type DisconnectVerdict struct {
-	// ShouldDisconnect is true when the client should be disconnected
-	ShouldDisconnect bool
-	// Reason explains the reason for disconnect
-	Reason string
-}
+func (c *ServerContext) periodicCheckDisconnect() {
+	var certTime <-chan time.Time
+	if !c.disconnectExpiredCert.IsZero() {
+		t := time.NewTimer(c.disconnectExpiredCert)
+		defer t.Stop()
+		certTime = t.C
+	}
 
-// ShouldDisconnect returns true if user activity settings
-// request the session to be disconnected
-func (c *ServerContext) ShouldDisconnect(clock clockwork.Clock) DisconnectVerdict {
-	now := clock.Now().UTC()
-	switch {
-	case c.clientIdleTimeout != 0 && now.Sub(c.clientLastActive) > c.clientIdleTimeout:
-		v := DisconnectVerdict{ShouldDisconnect: true}
-		if c.clientLastActive == 0 {
-			v.Reason = "client reported no activity"
-		} else {
-			v.Reason = fmt.Sprintf("client is idle for %v, exceeded idle timeout of %v", now.Sub(c.clientLastActive), c.clientIdleTimeout)
+	var idleTimer *time.Timer
+	var idleTime <-chan time.Time
+	if c.clientIdleTimeout != 0 {
+		idleTimer = time.NewTimer(c.clientIdleTimeout)
+		idleTime = t.C
+	}
+
+	for {
+		select {
+		// certificate has expired, disconnect
+		case <-certTime:
+			event := events.EventFields{
+				events.EventType:       events.ClientDisconnectEvent,
+				events.EventLogin:      c.Identity.Login,
+				events.EventUser:       c.Identity.TeleportUser,
+				events.LocalAddr:       c.Conn.LocalAddr().String(),
+				events.RemoteAddr:      c.Conn.RemoteAddr().String(),
+				events.SessionServerID: c.srv.ID(),
+				events.Reason:          fmt.Sprintf("client certificate expired at %v", c.clientLastActive),
+			}
+			c.srv.EmitAuditEvent(events.ClientDisconnectEvent, event)
+			c.Debugf("Disconnecting client: %v", event[events.Reason])
+			c.Conn.Close()
+			return
+		case <-idleTime:
+			now := c.srv.GetClock().Now()
+			clientLastActive := c.GetClientLastActive()
+			if now.Sub(clientLastActive) > c.clientIdleTimeout {
+				event := events.EventFields{
+					events.EventLogin:      c.Identity.Login,
+					events.EventUser:       c.Identity.TeleportUser,
+					events.LocalAddr:       c.Conn.LocalAddr().String(),
+					events.RemoteAddr:      c.Conn.RemoteAddr().String(),
+					events.SessionServerID: c.srv.ID(),
+				}
+				if clientLastActive == 0 {
+					event[events.Reason] = "client reported no activity"
+				} else {
+					event[events.Reason] = fmt.Sprintf("client is idle for %v, exceeded idle timeout of %v",
+						now.Sub(clientLastActive), c.clientIdleTimeout)
+				}
+				c.Debugf("Disconnecting client: %v", event[events.Reason])
+				c.srv.EmitAuditEvent(events.ClientDisconnectEvent, event)
+				c.Conn.Close()
+				return
+			}
+			idleTimer = time.NewTimer(c.clientIdleTimeout)
+			idleTime = t.C
+		case <-c.cancelContext.Done():
+			c.Debugf("Releasing associated resources - context has been closed.")
+			return
 		}
-		return v
-	case !c.disconnectExpiredCert.IsZero() && now.Sub(c.disconnectExpiredCert) > 0:
-		return DisconnectVerdict{ShouldDisconnect: true, Reason: fmt.Sprintf("client certificate expired at %v", c.clientLastActive)}
-	default:
-		return DisconnectVerdict{ShouldDisconnect: false}
 	}
 }
 
@@ -416,6 +461,7 @@ func (c *ServerContext) takeClosers() []io.Closer {
 }
 
 func (c *ServerContext) Close() error {
+	c.cancel()
 	return closeAll(c.takeClosers()...)
 }
 
