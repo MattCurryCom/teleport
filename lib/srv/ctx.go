@@ -335,7 +335,7 @@ func (c *ServerContext) periodicCheckDisconnect() {
 		case <-idleTime:
 			now := c.srv.GetClock().Now()
 			clientLastActive := c.GetClientLastActive()
-			if now.Sub(clientLastActive) > c.clientIdleTimeout {
+			if now.Sub(clientLastActive) >= c.clientIdleTimeout {
 				event := events.EventFields{
 					events.EventLogin:      c.Identity.Login,
 					events.EventUser:       c.Identity.TeleportUser,
@@ -354,7 +354,7 @@ func (c *ServerContext) periodicCheckDisconnect() {
 				c.Conn.Close()
 				return
 			}
-			idleTimer = time.NewTimer(c.clientIdleTimeout)
+			idleTimer = time.NewTimer(c.clientIdleTimeout - now.Sub(clientLastActive))
 			idleTime = t.C
 		case <-c.cancelContext.Done():
 			c.Debugf("Releasing associated resources - context has been closed.")
